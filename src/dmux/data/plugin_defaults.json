@@ -1,0 +1,14 @@
+{
+  "tmux-plugins/tmux-resurrect": {
+    "lines": ["set -g @resurrect-capture-pane-contents 'on'"]
+  },
+  "tmux-plugins/tmux-continuum": {
+    "lines": [
+      "set -g @continuum-restore 'on'",
+      "set -g @continuum-save-interval '60'"
+    ]
+  },
+  "tmux-plugins/tmux-sidebar": {
+    "lines": ["set -g @sidebar-width '40'"]
+  }
+}

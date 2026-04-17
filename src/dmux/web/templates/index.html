@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="dmux — control tmux sessions from the browser" />
+    <meta name="theme-color" content="#0066b3" />
+    <title>dmux</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/codemirror.min.css"
+      crossorigin="anonymous"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/addon/selection/active-line.min.css"
+      crossorigin="anonymous"
+    />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="app">
+      <aside class="sidebar" aria-label="Main navigation">
+        <div class="sidebar-brand">
+          <span class="logo" aria-hidden="true">◧</span>
+          <div>
+            <div class="sidebar-title">dmux</div>
+            <div class="sidebar-sub">tmux control plane</div>
+          </div>
+        </div>
+        <div class="sidebar-section-label">
+          <span>Sessions</span>
+          <span class="pill-count" id="session-count" aria-live="polite">0</span>
+        </div>
+        <div class="filter-wrap">
+          <label class="sr-only" for="filter">Filter sessions</label>
+          <span class="filter-icon" aria-hidden="true">⌕</span>
+          <input
+            type="search"
+            id="filter"
+            class="filter"
+            placeholder="Filter…"
+            title="Filter sessions by name (substring)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="button" class="filter-clear hidden" id="filter-clear" aria-label="Clear filter">
+            ×
+          </button>
+        </div>
+        <nav class="session-nav" id="session-nav" aria-label="Session list"></nav>
+        <div class="sidebar-section-label">
+          <span>Tools</span>
+        </div>
+        <div class="sidebar-tools" role="tablist" aria-label="Switch view">
+          <button type="button" class="nav-jump active" id="nav-sessions" role="tab" aria-selected="true">
+            Sessions
+          </button>
+          <button type="button" class="nav-jump" id="nav-plugins" role="tab" aria-selected="false">
+            Plugins (TPM)
+          </button>
+        </div>
+        <p class="sidebar-hint" id="kbd-hint"><kbd>/</kbd> search · <kbd>r</kbd> refresh</p>
+      </aside>
+
+      <div class="main-wrap">
+        <header class="topbar">
+          <div class="topbar-left">
+            <h1 class="view-title" id="view-title">Sessions</h1>
+            <p class="view-meta" id="view-meta">Loading…</p>
+            <p class="sync-line" id="sync-meta" aria-live="polite"></p>
+          </div>
+          <div class="topbar-actions">
+            <span id="topbar-toggle-wrap">
+              <label class="toggle" title="Poll the API every 5 seconds">
+                <input type="checkbox" id="auto-refresh" checked />
+                <span>Auto-refresh</span>
+              </label>
+            </span>
+            <div
+              class="status-block"
+              id="status-block"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              title="Connection to the dmux API"
+            >
+              <span class="status-pill" id="status-pill" aria-hidden="true">●</span>
+              <span class="status-label" id="status-label">Connecting</span>
+            </div>
+            <div class="btn-group" id="topbar-actions-main">
+              <button type="button" class="btn btn-ghost" id="btn-refresh" aria-label="Refresh (r)">
+                <span class="btn-icon" aria-hidden="true">↻</span>
+                Refresh
+              </button>
+              <span id="topbar-session-actions">
+                <button type="button" class="btn btn-primary" id="btn-new-session">
+                  <span class="btn-icon" aria-hidden="true">+</span>
+                  New session
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="btn-save-snapshot"
+                  title="Persist layout to SQLite (same as dmux save)"
+                >
+                  Save snapshot
+                </button>
+              </span>
+            </div>
+          </div>
+        </header>
+
+        <main class="main" id="main" tabindex="-1">
+          <div class="error-banner hidden" id="api-error" role="alert"></div>
+
+          <div id="view-sessions" class="main-view">
+          <div class="loading-panel" id="loading-panel" aria-busy="true" aria-labelledby="loading-caption">
+            <p class="loading-caption" id="loading-caption">Loading sessions…</p>
+            <div class="skeleton-card">
+              <div class="skeleton-line w-40"></div>
+              <div class="skeleton-line w-70"></div>
+              <div class="skeleton-line w-55"></div>
+            </div>
+            <div class="skeleton-card">
+              <div class="skeleton-line w-30"></div>
+              <div class="skeleton-blocks">
+                <div class="skeleton-block"></div>
+                <div class="skeleton-block"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="empty-state hidden" id="empty-state">
+            <div class="empty-card">
+              <div class="empty-icon" aria-hidden="true">▢</div>
+              <p class="empty-lead">Select a session</p>
+              <p class="empty-hint">
+                Choose a session in the list, or use <strong>New session</strong>. Actions here run
+                on the tmux server this UI is connected to.
+              </p>
+            </div>
+          </div>
+          <div class="detail hidden" id="detail"></div>
+          </div>
+
+          <div id="view-plugins" class="main-view hidden" aria-label="Tmux plugins">
+            <section class="plugins-panel">
+              <p class="plugins-lead">
+                Uses <strong>TPM</strong> (bundled in dmux). Plugins are listed in a generated file and
+                cloned under <code>~/.tmux/plugins/</code>. Run <strong>Bootstrap</strong> once to hook
+                <code>source-file</code> into your tmux.conf.
+              </p>
+              <p class="plugins-meta mono" id="plugins-paths"></p>
+              <div class="plugins-toolbar">
+                <button type="button" class="btn btn-secondary" id="btn-plugins-bootstrap">Bootstrap tmux.conf</button>
+                <button type="button" class="btn btn-secondary" id="btn-plugins-apply-defaults" title="Rewrite plugins.tmux with suggested option lines from each plugin README (and dmux data)">
+                  Apply suggested config
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-plugins-install">Install / clone</button>
+                <button type="button" class="btn btn-secondary" id="btn-plugins-update">Update all</button>
+                <button type="button" class="btn btn-secondary" id="btn-plugins-clean">Clean removed</button>
+                <button type="button" class="btn btn-secondary" id="btn-plugins-source">Reload in tmux</button>
+                <button type="button" class="btn btn-secondary" id="btn-plugins-view-fragment" title="Show ~/.config/dmux/plugins.tmux">
+                  View plugins.tmux
+                </button>
+              </div>
+              <form class="plugins-add" id="form-add-plugin">
+                <label class="plugins-add-label">
+                  Add plugin
+                  <div class="plugins-add-combo">
+                    <div class="plugins-add-combo-row">
+                      <input
+                        type="text"
+                        id="plugin-spec"
+                        name="plugin"
+                        placeholder="tmux-plugins/tmux-sensible"
+                        autocomplete="off"
+                        spellcheck="false"
+                        aria-autocomplete="list"
+                        aria-controls="plugin-spec-suggest"
+                        aria-expanded="false"
+                        aria-describedby="plugin-spec-hint"
+                      />
+                      <button
+                        type="button"
+                        class="btn-plugin-spec-dropdown"
+                        id="btn-plugin-spec-dropdown"
+                        aria-label="Open plugin list"
+                        aria-expanded="false"
+                        aria-controls="plugin-spec-suggest"
+                      >
+                        ▾
+                      </button>
+                    </div>
+                    <ul
+                      id="plugin-spec-suggest"
+                      class="plugin-spec-suggest"
+                      role="listbox"
+                      hidden
+                      aria-label="tmux-plugins repository suggestions"
+                    ></ul>
+                  </div>
+                  <span id="plugin-spec-hint" class="plugins-add-hint">
+                    Suggestions from
+                    <a href="https://github.com/tmux-plugins" target="_blank" rel="noopener noreferrer">tmux-plugins</a>
+                    on GitHub
+                  </span>
+                </label>
+                <button type="submit" class="btn btn-primary" id="btn-plugin-add">Add</button>
+              </form>
+              <div class="plugins-table-wrap">
+                <table class="plugins-table" aria-label="Configured plugins">
+                  <thead>
+                    <tr>
+                      <th scope="col">Plugin</th>
+                      <th scope="col">About</th>
+                      <th scope="col">Folder</th>
+                      <th scope="col">Installed</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="plugins-tbody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="toast-wrap" id="toasts" aria-live="polite" aria-relevant="additions"></div>
+
+    <dialog class="modal modal-plugins-fragment" id="modal-plugins-fragment" aria-labelledby="modal-plugins-fragment-title">
+      <div class="modal-form">
+        <h2 id="modal-plugins-fragment-title">plugins.tmux</h2>
+        <p class="modal-lead plugins-fragment-path mono" id="modal-plugins-fragment-path"></p>
+        <p class="plugins-fragment-editor-hint">
+          <kbd>Tab</kbd> inserts two spaces · <kbd>Ctrl</kbd>+<kbd>S</kbd> or <strong>Save</strong>
+        </p>
+        <div class="plugins-fragment-editor-wrap" id="modal-plugins-fragment-editor-host"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="modal-plugins-fragment-close">Close</button>
+          <button type="button" class="btn btn-primary" id="modal-plugins-fragment-save">Save</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" id="modal-rename" aria-labelledby="modal-rename-title">
+      <form class="modal-form" id="form-rename" novalidate>
+        <h2 id="modal-rename-title">Rename session</h2>
+        <p class="modal-lead">Same as <code>dmux rename &lt;old&gt; &lt;new&gt;</code> — tmux session name must stay unique.</p>
+        <input type="hidden" id="rename-from" name="from" value="" />
+        <label>
+          New name
+          <input type="text" id="rename-to" name="to" required autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="modal-rename-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="modal-rename-submit">Rename</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="modal-pane-style" aria-labelledby="modal-pane-style-title">
+      <form class="modal-form" id="form-pane-style" novalidate>
+        <h2 id="modal-pane-style-title">Pane appearance</h2>
+        <p class="modal-lead">
+          <strong>Text / background</strong> are applied in tmux with
+          <code>set-option -p -t &lt;pane&gt; window-style</code> and
+          <code>window-active-style</code> (same as running <code>tmux</code> from your shell — use
+          <code>dmux ui -S</code> if you use a non-default socket). Use tmux colour syntax:
+          <code>#rrggbb</code>, <code>colour0</code>–<code>colour255</code>, or names like
+          <code>red</code> — not <code>rgb(r,g,b)</code> (commas break tmux styles).
+          <strong>Font</strong> applies only to the dmux web tile; terminals do not support per-pane font via tmux.
+        </p>
+        <input type="hidden" id="pane-style-pane-id" name="pane_id" value="" autocomplete="off" />
+        <p class="pane-style-id-label" id="pane-style-id-display" aria-live="polite"></p>
+        <label>
+          Font (web tile only)
+          <input
+            type="text"
+            id="pane-style-font"
+            name="font"
+            list="pane-style-font-list"
+            placeholder="Pick a preset or type a CSS font stack — empty = default"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <datalist id="pane-style-font-list">
+            <option value="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"></option>
+            <option value="system-ui, -apple-system, Segoe UI, Roboto, sans-serif"></option>
+            <option value="Georgia, Times New Roman, serif"></option>
+            <option value="SF Mono, Monaco, Cascadia Code, monospace"></option>
+            <option value="Tahoma, Segoe UI, Verdana, sans-serif"></option>
+            <option value="JetBrains Mono, ui-monospace, monospace"></option>
+          </datalist>
+        </label>
+        <label>
+          Text colour (tmux + web tile)
+          <span class="pane-style-hint">Swatch sets <code>#hex</code>; for <code>colour252</code> or <code>red</code> type below.</span>
+          <span class="pane-style-field-row">
+            <input
+              type="color"
+              id="pane-style-fg-color"
+              class="pane-style-color-btn"
+              value="#e0e0e0"
+              aria-label="Pick text colour (hex)"
+              title="Colour swatch → fills hex in the field"
+            />
+            <input
+              type="text"
+              id="pane-style-fg"
+              name="fg"
+              placeholder="#e0e0e0 or colour252 — empty = default"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </span>
+        </label>
+        <label>
+          Background (tmux + web tile)
+          <span class="pane-style-field-row">
+            <input
+              type="color"
+              id="pane-style-bg-color"
+              class="pane-style-color-btn"
+              value="#1e1e1e"
+              aria-label="Pick background colour (hex)"
+              title="Colour swatch → fills hex in the field"
+            />
+            <input
+              type="text"
+              id="pane-style-bg"
+              name="background"
+              placeholder="#1e1e1e or colour235 — empty = default"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="pane-style-reset">Clear</button>
+          <button type="button" class="btn btn-secondary" id="pane-style-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="pane-style-save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="modal-new" aria-labelledby="modal-title">
+      <form class="modal-form" id="form-new" novalidate>
+        <h2 id="modal-title">New session</h2>
+        <p class="modal-lead">Starts a detached tmux session you can attach to from a terminal.</p>
+        <label>
+          Session name
+          <input type="text" name="name" required placeholder="e.g. dev" autocomplete="off" />
+        </label>
+        <label>
+          Start directory <span class="optional">(optional)</span>
+          <input type="text" name="cwd" placeholder="/path/to/project" autocomplete="off" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="modal-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="modal-submit">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/codemirror.min.js"
+      crossorigin="anonymous"
+      defer
+    ></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/addon/edit/matchbrackets.min.js"
+      crossorigin="anonymous"
+      defer
+    ></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/addon/selection/active-line.min.js"
+      crossorigin="anonymous"
+      defer
+    ></script>
+    <script src="/static/plugins-fragment-editor.js" defer></script>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
