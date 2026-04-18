@@ -1,2 +1,15 @@
+include LICENSE
+include README.md
+include pyproject.toml
+
 recursive-include src/dmux/web *
 recursive-include src/dmux/vendor/tpm *
+recursive-include src/dmux/data *.json
+
+global-exclude .DS_Store
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude *.swp
+global-exclude .git*
+prune src/dmux/vendor/tpm/.git
+prune src/dmux/vendor/tpm/tests
