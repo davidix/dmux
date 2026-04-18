@@ -334,20 +334,20 @@ def plugins_cmd_status() -> None:
 
 @plugins_app.command("bootstrap")
 def plugins_cmd_bootstrap() -> None:
-    """Create ~/.config/dmux/plugins.tmux and add a source-file hook to tmux.conf."""
+    """Create ~/.config/dmux/plugins.tmux and append a source-file hook to ~/.tmux.conf.
+
+    Set DMUX_TMUX_CONF to write the hook elsewhere (e.g. ~/.config/tmux/tmux.conf).
+    """
     from dmux.services import plugin_manager as pm
 
     try:
         pm.ensure_plugins_fragment_exists()
-        changed = pm.ensure_tmux_conf_hook()
+        changed, detail = pm.ensure_tmux_conf_hook()
     except PluginManagerError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
         raise typer.Exit(1) from e
     typer.echo("plugins.tmux ready.")
-    if changed:
-        typer.echo(f"Updated {pm.user_tmux_conf_path()} with dmux source-file hook.")
-    else:
-        typer.echo("tmux.conf hook already present.")
+    typer.echo(detail)
 
 
 @plugins_app.command("add")
@@ -420,16 +420,22 @@ def plugins_cmd_clean() -> None:
 
 
 @plugins_app.command("source")
-def plugins_cmd_source() -> None:
+def plugins_cmd_source(
+    socket: Annotated[str | None, typer.Option("--socket", "-S", help="tmux socket (same as dmux ui -S)")] = None,
+) -> None:
     """tmux source-file the managed fragment (tmux server must be running)."""
     from dmux.services import plugin_manager as pm
 
     try:
-        msg = pm.source_fragment_in_tmux()
+        result = pm.source_fragment_in_tmux(socket_path=socket)
     except PluginManagerError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
         raise typer.Exit(1) from e
-    typer.echo(msg)
+    output = str(result.get("output") or "ok")
+    typer.echo(output)
+    warning = result.get("warning")
+    if isinstance(warning, str) and warning:
+        typer.secho(warning, err=True, fg=typer.colors.YELLOW)
 
 
 app.add_typer(plugins_app, name="plugins")

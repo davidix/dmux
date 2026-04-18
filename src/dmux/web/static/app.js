@@ -16,34 +16,38 @@ let refreshTimer = null;
 let loadGeneration = 0;
 /** @type {"sessions" | "plugins"} */
 let mainView = "sessions";
-/** Official tmux-plugins GitHub org specs; filled by ensurePluginCatalog(). */
+/** Plugin catalog state — filled by ensurePluginCatalog(). */
 let pluginCatalogSpecs = [];
+/** @type {{spec:string, category:string, description:string, source?:string}[]} */
+let pluginCatalogEntries = [];
 let pluginCatalogLoadFailed = false;
 let pluginCatalogLoadPromise = null;
+let chordLeader = null;
+let chordLeaderAt = 0;
 
-/** Bundled list when /api/v1/plugins/catalog fails (must stay in sync with plugin_manager._FALLBACK_TMUX_PLUGINS). */
+/** Bundled list when /api/v1/plugins/catalog fails (curated subset of the awesome list). */
 const PLUGIN_CATALOG_STATIC_FALLBACK = [
-  "tmux-plugins/tmux-battery",
-  "tmux-plugins/tmux-continuum",
-  "tmux-plugins/tmux-copycat",
-  "tmux-plugins/tmux-cpu",
-  "tmux-plugins/tmux-example-plugin",
-  "tmux-plugins/tmux-fpp",
-  "tmux-plugins/tmux-maildir-counter",
-  "tmux-plugins/tmux-mem-cpu-load",
-  "tmux-plugins/tmux-net-speed",
-  "tmux-plugins/tmux-online-status",
-  "tmux-plugins/tmux-open",
-  "tmux-plugins/tmux-pain-control",
-  "tmux-plugins/tmux-prefix-highlight",
-  "tmux-plugins/tmux-resurrect",
-  "tmux-plugins/tmux-sensible",
-  "tmux-plugins/tmux-sessionist",
-  "tmux-plugins/tmux-sidebar",
-  "tmux-plugins/tmux-super-fingers",
-  "tmux-plugins/tmux-urlview",
-  "tmux-plugins/tmux-yank",
-  "tmux-plugins/vim-tmux-focus-events",
+  { spec: "Freed-Wu/tmux-status-bar", category: "Status Bar", description: "Flexible status-bar framework. Requires tmux-powerline-compiler." },
+  { spec: "catppuccin/tmux", category: "Themes", description: "Soothing pastel theme for tmux." },
+  { spec: "dracula/tmux", category: "Themes", description: "Dracula dark theme for tmux." },
+  { spec: "rose-pine/tmux", category: "Themes", description: "Pine-tinted minimalist theme." },
+  { spec: "nordtheme/tmux", category: "Themes", description: "Nord arctic color theme." },
+  { spec: "sainnhe/tmux-fzf", category: "General", description: "Use fzf to manage tmux environment." },
+  { spec: "wfxr/tmux-fzf-url", category: "General", description: "Open URLs from terminal output via fzf." },
+  { spec: "joshmedeski/sesh", category: "Sessions", description: "Smart session manager for the terminal." },
+  { spec: "omerxx/tmux-sessionx", category: "Sessions", description: "Session manager with zoxide + fuzzy preview." },
+  { spec: "MunifTanjim/tmux-suspend", category: "Sessions", description: "Suspend local tmux to use nested remote tmux." },
+  { spec: "MunifTanjim/tmux-mode-indicator", category: "Status Bar", description: "Show currently active tmux mode." },
+  { spec: "tmux-plugins/tpm", category: "General", description: "Tmux plugin manager." },
+  { spec: "tmux-plugins/tmux-sensible", category: "General", description: "Basic tmux settings everyone can agree on." },
+  { spec: "tmux-plugins/tmux-pain-control", category: "Navigation", description: "Standard pane key-bindings." },
+  { spec: "tmux-plugins/tmux-yank", category: "Copy Mode", description: "Copy to system clipboard." },
+  { spec: "tmux-plugins/tmux-resurrect", category: "Sessions", description: "Persist tmux environment across restarts." },
+  { spec: "tmux-plugins/tmux-continuum", category: "Sessions", description: "Continuous saving + auto-restore on tmux start." },
+  { spec: "tmux-plugins/tmux-battery", category: "Status Bar", description: "Battery percentage and icon indicator." },
+  { spec: "tmux-plugins/tmux-cpu", category: "Status Bar", description: "CPU percentage and icon indicator." },
+  { spec: "tmux-plugins/tmux-prefix-highlight", category: "Status Bar", description: "Highlights when you press the prefix key." },
+  { spec: "tmux-plugins/tmux-sidebar", category: "General", description: "Sidebar with directory tree (IDE-like)." },
 ];
 
 const el = (id) => document.getElementById(id);
@@ -60,23 +64,25 @@ function apiUrl(path) {
 function toast(message, type = "ok") {
   const wrap = el("toasts");
   const t = document.createElement("div");
-  t.className = `toast ${type === "err" ? "err" : "ok"}`;
-  t.setAttribute("role", "status");
+  const variant = type === "err" ? "err" : type === "warn" ? "warn" : "ok";
+  t.className = `toast ${variant}`;
+  t.setAttribute("role", variant === "ok" ? "status" : "alert");
   const icon = document.createElement("span");
   icon.className = "toast-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = type === "err" ? "✕" : "✓";
+  icon.textContent = variant === "err" ? "✕" : variant === "warn" ? "⚠" : "✓";
   const msg = document.createElement("div");
   msg.className = "toast-msg";
   msg.textContent = message;
   t.appendChild(icon);
   t.appendChild(msg);
   wrap.appendChild(t);
+  const dwell = variant === "warn" ? 9000 : 4800;
   setTimeout(() => {
     t.style.opacity = "0";
     t.style.transition = "opacity 0.25s ease";
     setTimeout(() => t.remove(), 260);
-  }, 4800);
+  }, dwell);
 }
 
 /** Last-fetch time in the browser’s local zone (for comparison with your system clock). */
@@ -149,6 +155,24 @@ function applyMainView() {
   }
 }
 
+async function switchMainView(nextView) {
+  if (nextView !== "sessions" && nextView !== "plugins") return;
+  if (mainView === nextView) return;
+  mainView = nextView;
+  if (nextView === "plugins") {
+    const vt = el("view-title");
+    const vm = el("view-meta");
+    const sm = el("sync-meta");
+    if (vt) vt.textContent = "Plugins (TPM)";
+    if (vm) vm.textContent = "Bundled tmux-plugins/tpm · ~/.tmux/plugins";
+    if (sm) sm.textContent = "";
+    applyMainView();
+    return;
+  }
+  applyMainView();
+  await refresh({ silent: true });
+}
+
 async function fetchPluginsStatus() {
   const res = await fetch(apiUrl("/api/v1/plugins"), {
     cache: "no-store",
@@ -158,19 +182,24 @@ async function fetchPluginsStatus() {
   return res.json();
 }
 
-/** Load GET /api/v1/plugins/catalog once; fills pluginCatalogSpecs. */
+/** Load GET /api/v1/plugins/catalog once; fills pluginCatalogEntries + pluginCatalogSpecs. */
 function ensurePluginCatalog() {
   if (pluginCatalogLoadPromise) return pluginCatalogLoadPromise;
   const hint = el("plugin-spec-hint");
+  const useFallback = () => {
+    pluginCatalogEntries = PLUGIN_CATALOG_STATIC_FALLBACK.slice();
+    pluginCatalogSpecs = pluginCatalogEntries.map((e) => e.spec);
+    pluginCatalogLoadFailed = false;
+  };
   pluginCatalogLoadPromise = (async () => {
-    const setHintDefault = () => {
+    const setHintDefault = (count) => {
       if (!hint) return;
       hint.innerHTML =
-        'Suggestions from <a href="https://github.com/tmux-plugins" target="_blank" rel="noopener noreferrer">tmux-plugins</a> on GitHub';
+        `${count} plugins from the <a href="https://github.com/tmux-plugins/list" target="_blank" rel="noopener noreferrer">tmux-plugins/list</a> awesome list, merged with the live <a href="https://github.com/tmux-plugins" target="_blank" rel="noopener noreferrer">tmux-plugins</a> org.`;
     };
     const setHintDegraded = (detail) => {
       if (!hint) return;
-      hint.textContent = `Curated plugin list (${detail}). You can still type any user/repo (e.g. tmux-plugins/tmux-sensible).`;
+      hint.textContent = `Curated plugin list (${detail}). You can still type any user/repo (e.g. catppuccin/tmux).`;
     };
     try {
       const res = await fetch(apiUrl("/api/v1/plugins/catalog"), {
@@ -178,24 +207,30 @@ function ensurePluginCatalog() {
         headers: { Accept: "application/json" },
       });
       const data = await res.json().catch(() => ({}));
-      const fromApi = Array.isArray(data.plugins) ? data.plugins : [];
-      pluginCatalogSpecs =
-        fromApi.length > 0 ? fromApi : PLUGIN_CATALOG_STATIC_FALLBACK.slice();
+      const apiEntries = Array.isArray(data.entries) ? data.entries : [];
+      const apiPlugins = Array.isArray(data.plugins) ? data.plugins : [];
+      if (apiEntries.length > 0) {
+        pluginCatalogEntries = apiEntries.filter((e) => e && typeof e.spec === "string");
+        pluginCatalogSpecs = pluginCatalogEntries.map((e) => e.spec);
+      } else if (apiPlugins.length > 0) {
+        pluginCatalogSpecs = apiPlugins;
+        pluginCatalogEntries = apiPlugins.map((spec) => ({ spec, category: "Other", description: "" }));
+      } else {
+        useFallback();
+      }
       pluginCatalogLoadFailed = pluginCatalogSpecs.length === 0;
       if (!res.ok) {
-        pluginCatalogSpecs = PLUGIN_CATALOG_STATIC_FALLBACK.slice();
-        pluginCatalogLoadFailed = false;
+        useFallback();
         setHintDegraded(`API HTTP ${res.status}`);
         return;
       }
       if (data.error) {
         setHintDegraded(data.error);
       } else {
-        setHintDefault();
+        setHintDefault(pluginCatalogSpecs.length);
       }
     } catch (e) {
-      pluginCatalogSpecs = PLUGIN_CATALOG_STATIC_FALLBACK.slice();
-      pluginCatalogLoadFailed = false;
+      useFallback();
       setHintDegraded(String(e.message || e) || "network error");
     }
   })();
@@ -212,11 +247,19 @@ function setupPluginSpecAutocomplete() {
 
   let highlight = -1;
 
-  function filterSpecs(query) {
+  function filterEntries(query) {
     const q = String(query || "").trim().toLowerCase();
-    if (!pluginCatalogSpecs.length) return [];
-    if (!q) return pluginCatalogSpecs.slice();
-    return pluginCatalogSpecs.filter((s) => s.toLowerCase().includes(q));
+    const src = pluginCatalogEntries.length
+      ? pluginCatalogEntries
+      : pluginCatalogSpecs.map((spec) => ({ spec, category: "Other", description: "" }));
+    if (!src.length) return [];
+    if (!q) return src.slice();
+    return src.filter((e) => {
+      if (e.spec && e.spec.toLowerCase().includes(q)) return true;
+      if (e.category && e.category.toLowerCase().includes(q)) return true;
+      if (e.description && e.description.toLowerCase().includes(q)) return true;
+      return false;
+    });
   }
 
   function setHighlight(items) {
@@ -247,11 +290,35 @@ function setupPluginSpecAutocomplete() {
       closeList();
       return;
     }
-    matches.forEach((spec, i) => {
+    let lastCat = null;
+    let optIndex = 0;
+    matches.forEach((entry) => {
+      const spec = typeof entry === "string" ? entry : entry.spec;
+      const cat = (typeof entry === "string" ? "" : entry.category) || "";
+      const desc = (typeof entry === "string" ? "" : entry.description) || "";
+      if (cat && cat !== lastCat) {
+        const head = document.createElement("li");
+        head.className = "plugin-spec-suggest-cat";
+        head.setAttribute("role", "presentation");
+        head.textContent = cat;
+        list.appendChild(head);
+        lastCat = cat;
+      }
       const li = document.createElement("li");
       li.setAttribute("role", "option");
-      li.setAttribute("id", `plugin-spec-opt-${i}`);
-      li.textContent = spec;
+      li.setAttribute("id", `plugin-spec-opt-${optIndex++}`);
+      li.className = "plugin-spec-suggest-item";
+      li.dataset.spec = spec;
+      const specEl = document.createElement("span");
+      specEl.className = "plugin-spec-suggest-spec";
+      specEl.textContent = spec;
+      li.appendChild(specEl);
+      if (desc) {
+        const descEl = document.createElement("span");
+        descEl.className = "plugin-spec-suggest-desc";
+        descEl.textContent = desc;
+        li.appendChild(descEl);
+      }
       li.addEventListener("mousedown", (e) => {
         e.preventDefault();
         input.value = spec;
@@ -284,8 +351,7 @@ function setupPluginSpecAutocomplete() {
       renderCatalogError();
       return;
     }
-    const matches = filterSpecs(input.value);
-    renderSuggestions(matches);
+    renderSuggestions(filterEntries(input.value));
   }
 
   async function openOrRefresh() {
@@ -304,7 +370,7 @@ function setupPluginSpecAutocomplete() {
       input.focus();
       return;
     }
-    renderSuggestions(pluginCatalogSpecs.slice());
+    renderSuggestions(filterEntries(""));
     input.focus();
   }
 
@@ -362,7 +428,8 @@ function setupPluginSpecAutocomplete() {
 
     if (e.key === "Enter" && !list.hidden && highlight >= 0 && items[highlight]) {
       e.preventDefault();
-      input.value = items[highlight].textContent || "";
+      const target = items[highlight];
+      input.value = target.dataset.spec || target.textContent || "";
       closeList();
     }
   });
@@ -442,6 +509,30 @@ async function fillPluginAboutCell(td, spec) {
   }
 }
 
+/**
+ * Render a persistent banner above the plugins table for known plugin warnings
+ * (currently: Freed-Wu/tmux-status-bar missing the AOT compiler, which silently
+ * empties status-left/right on every `tmux source-file`).
+ */
+function renderPluginsWarningBanner(data) {
+  const banner = el("plugins-warning-banner");
+  if (!banner) return;
+  const warning =
+    data && data.freed_wu_status_bar && typeof data.freed_wu_status_bar.warning === "string"
+      ? data.freed_wu_status_bar.warning
+      : null;
+  if (!warning) {
+    banner.classList.add("hidden");
+    banner.textContent = "";
+    banner.removeAttribute("data-warn-key");
+    return;
+  }
+  banner.classList.remove("hidden");
+  banner.innerHTML = `<span class="plugins-warning-icon" aria-hidden="true">⚠</span><span class="plugins-warning-text"></span>`;
+  banner.querySelector(".plugins-warning-text").textContent = warning;
+  banner.setAttribute("data-warn-key", "freed-wu-status-bar-compiler");
+}
+
 async function loadPluginsPanel() {
   const paths = el("plugins-paths");
   const tbody = el("plugins-tbody");
@@ -452,8 +543,14 @@ async function loadPluginsPanel() {
       const fr = data.fragment_path || "—";
       const tc = data.tmux_conf || "—";
       const ok = data.tpm_bundled ? "yes" : "no";
-      paths.innerHTML = `TPM bundled: <strong>${ok}</strong> · fragment <code>${escapeHtml(fr)}</code> · tmux.conf <code>${escapeHtml(tc)}</code>`;
+      const sock = data.tmux_socket;
+      const sockBit =
+        sock != null && String(sock).trim()
+          ? ` · reload uses <code>tmux -S ${escapeHtml(String(sock))}</code>`
+          : " · reload uses default tmux socket";
+      paths.innerHTML = `TPM bundled: <strong>${ok}</strong> · fragment <code>${escapeHtml(fr)}</code> · tmux.conf <code>${escapeHtml(tc)}</code>${sockBit}`;
     }
+    renderPluginsWarningBanner(data);
     tbody.innerHTML = "";
     const rows = Array.isArray(data.plugins) ? data.plugins : [];
     if (!data.tpm_bundled) {
@@ -564,6 +661,29 @@ async function postPluginsAction(path) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+/** `tmux source-file` the managed plugins fragment (same socket as this UI). */
+async function sourceFragmentInTmux() {
+  const buttons = [el("btn-plugins-source"), el("modal-plugins-fragment-source")].filter(Boolean);
+  buttons.forEach((b) => {
+    b.disabled = true;
+  });
+  try {
+    const data = await postPluginsAction("source");
+    const okMsg = "Reloaded in tmux";
+    toast(data.output ? `${okMsg}: ${String(data.output).slice(0, 200)}` : okMsg);
+    if (data && typeof data.warning === "string" && data.warning) {
+      toast(data.warning, "warn");
+    }
+    await loadPluginsPanel();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+  } finally {
+    buttons.forEach((b) => {
+      b.disabled = false;
+    });
+  }
 }
 
 /** Regenerate whole fragment, or one plugin when `pluginSpec` is set. */
@@ -747,6 +867,153 @@ async function deletePaneApi(paneId) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+/** Applies tmux `select-pane -P` (foreground/background). Omit API call when both colours empty to avoid resetting tmux unintentionally. */
+/* =========================================================
+ * Pane / window mutation helpers (v2 — extra tmux features)
+ * ========================================================= */
+
+async function postSendKeys(paneId, { text, enter, literal }) {
+  const res = await fetch(apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/send-keys`), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ text, enter: !!enter, literal: !!literal }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function getPaneCapture(paneId, lines = 200) {
+  const res = await fetch(
+    apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/capture?lines=${encodeURIComponent(lines)}`),
+    { cache: "no-store", headers: { Accept: "application/json" } },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return String(data.text || "");
+}
+
+async function postZoomPane(paneId) {
+  const res = await fetch(apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/zoom`), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function postBreakPane(paneId) {
+  const res = await fetch(apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/break`), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function postSwapPane(paneId, direction) {
+  const res = await fetch(apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/swap`), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ direction }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function postKillOtherPanes(paneId) {
+  const res = await fetch(apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/kill-others`), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: "{}",
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function postResizePane(paneId, dx, dy) {
+  const res = await fetch(apiUrl(`/api/v1/panes/${encodeURIComponent(paneId)}/resize`), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ delta_x: dx, delta_y: dy }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function patchRenameWindow(sessionName, windowIndex, newName) {
+  const res = await fetch(
+    apiUrl(`/api/v1/sessions/${encodeURIComponent(sessionName)}/windows/${windowIndex}/rename`),
+    {
+      method: "PATCH",
+      cache: "no-store",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function postMoveWindow(sessionName, windowIndex, direction) {
+  const res = await fetch(
+    apiUrl(`/api/v1/sessions/${encodeURIComponent(sessionName)}/windows/${windowIndex}/move`),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ direction }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function postSynchronizeWindow(sessionName, windowIndex, on) {
+  const res = await fetch(
+    apiUrl(
+      `/api/v1/sessions/${encodeURIComponent(sessionName)}/windows/${windowIndex}/synchronize`,
+    ),
+    {
+      method: "POST",
+      cache: "no-store",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ on: !!on }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function fetchServerInfo() {
+  try {
+    const r = await fetch(apiUrl("/api/v1/server"), {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
 }
 
 /** Applies tmux `select-pane -P` (foreground/background). Omit API call when both colours empty to avoid resetting tmux unintentionally. */
@@ -950,11 +1217,253 @@ function tmuxPanePositionsDistinct(panes) {
   return keys.size > 1;
 }
 
+/* =========================================================
+ * Popover menu primitive (one open at a time, click-away closes)
+ * ========================================================= */
+
+let _activePopover = null;
+
+function closeActivePopover() {
+  if (!_activePopover) return;
+  const { el: popEl, anchor, onDocClick, onKey, onResize } = _activePopover;
+  _activePopover = null;
+  if (popEl && popEl.parentNode) popEl.parentNode.removeChild(popEl);
+  document.removeEventListener("mousedown", onDocClick, true);
+  document.removeEventListener("keydown", onKey, true);
+  window.removeEventListener("resize", onResize, true);
+  window.removeEventListener("scroll", onResize, true);
+  if (anchor) {
+    anchor.setAttribute("aria-expanded", "false");
+  }
+}
+
+/**
+ * @typedef {{label:string, icon?:string, danger?:boolean, divider?:boolean, section?:string, onClick?: () => void|Promise<void>}} PopoverItem
+ */
+
+/** Open a popover anchored to `anchorEl`. `items` is a flat list (use `divider:true` / `section:'…'` for groupings). */
+function openPopover(anchorEl, items) {
+  closeActivePopover();
+  if (!anchorEl) return;
+  const pop = document.createElement("div");
+  pop.className = "dmux-popover";
+  pop.setAttribute("role", "menu");
+  for (const item of items) {
+    if (item.divider) {
+      const d = document.createElement("div");
+      d.className = "dmux-popover-divider";
+      pop.appendChild(d);
+      continue;
+    }
+    if (item.section) {
+      const s = document.createElement("div");
+      s.className = "dmux-popover-section";
+      s.textContent = item.section;
+      pop.appendChild(s);
+      continue;
+    }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "dmux-popover-item" + (item.danger ? " is-danger" : "");
+    b.setAttribute("role", "menuitem");
+    if (item.icon) {
+      const ic = document.createElement("span");
+      ic.className = "dmux-popover-icon";
+      ic.setAttribute("aria-hidden", "true");
+      ic.innerHTML = `<i class="bi ${item.icon}"></i>`;
+      b.appendChild(ic);
+    }
+    const lab = document.createElement("span");
+    lab.className = "dmux-popover-label";
+    lab.textContent = item.label;
+    b.appendChild(lab);
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const handler = item.onClick;
+      closeActivePopover();
+      if (typeof handler === "function") {
+        try {
+          const r = handler();
+          if (r && typeof r.then === "function") {
+            r.catch((e) => toast(String(e.message || e), "err"));
+          }
+        } catch (e) {
+          toast(String(e.message || e), "err");
+        }
+      }
+    });
+    pop.appendChild(b);
+  }
+  document.body.appendChild(pop);
+  const positionPopover = () => {
+    const rect = anchorEl.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    const margin = 6;
+    let top = rect.bottom + margin + window.scrollY;
+    let left = rect.right - popRect.width + window.scrollX;
+    if (left < 8) left = rect.left + window.scrollX;
+    if (left + popRect.width > window.scrollX + window.innerWidth - 8) {
+      left = window.scrollX + window.innerWidth - popRect.width - 8;
+    }
+    if (top + popRect.height > window.scrollY + window.innerHeight - 8) {
+      top = rect.top + window.scrollY - popRect.height - margin;
+    }
+    pop.style.top = `${Math.max(8, top)}px`;
+    pop.style.left = `${Math.max(8, left)}px`;
+  };
+  positionPopover();
+  const onDocClick = (ev) => {
+    if (pop.contains(ev.target) || anchorEl.contains(ev.target)) return;
+    closeActivePopover();
+  };
+  const onKey = (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeActivePopover();
+      anchorEl.focus({ preventScroll: true });
+    }
+  };
+  const onResize = () => positionPopover();
+  document.addEventListener("mousedown", onDocClick, true);
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", onResize, true);
+  window.addEventListener("scroll", onResize, true);
+  anchorEl.setAttribute("aria-expanded", "true");
+  _activePopover = { el: pop, anchor: anchorEl, onDocClick, onKey, onResize };
+  const first = pop.querySelector(".dmux-popover-item");
+  if (first) first.focus({ preventScroll: true });
+}
+
+/* =========================================================
+ * Pane tile rendering
+ * ========================================================= */
+
+/** Build the action menu items for a pane (used by the kebab popover). */
+function buildPaneMenuItems(pane, window, session) {
+  const isOnly = (window.panes || []).length <= 1;
+  return [
+    { section: "Pane" },
+    {
+      label: pane.active ? "Re-focus pane" : "Focus pane",
+      icon: "bi-bullseye",
+      onClick: async () => {
+        await focusPane(pane.pane_id);
+        toast("Pane focused");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: window.zoomed ? "Unzoom window" : "Zoom pane",
+      icon: window.zoomed ? "bi-fullscreen-exit" : "bi-arrows-fullscreen",
+      onClick: async () => {
+        await postZoomPane(pane.pane_id);
+        toast(window.zoomed ? "Window unzoomed" : "Pane zoomed");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: "Send keys…",
+      icon: "bi-keyboard",
+      onClick: () => openSendKeysModal(pane.pane_id),
+    },
+    {
+      label: "Capture output…",
+      icon: "bi-eye",
+      onClick: () => openCaptureModal(pane.pane_id),
+    },
+    {
+      label: "Resize…",
+      icon: "bi-arrows-angle-expand",
+      onClick: () => openResizeModal(pane.pane_id),
+    },
+    { divider: true },
+    { section: "Layout" },
+    {
+      label: "Swap ↑ (previous)",
+      icon: "bi-arrow-up",
+      onClick: async () => {
+        await postSwapPane(pane.pane_id, "up");
+        toast("Pane swapped up");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: "Swap ↓ (next)",
+      icon: "bi-arrow-down",
+      onClick: async () => {
+        await postSwapPane(pane.pane_id, "down");
+        toast("Pane swapped down");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: "Break out into new window",
+      icon: "bi-box-arrow-up-right",
+      onClick: async () => {
+        if (isOnly) {
+          toast("Only one pane in this window — nothing to break out.", "warn");
+          return;
+        }
+        await postBreakPane(pane.pane_id);
+        toast("Pane broken out into a new window");
+        await refresh({ silent: true });
+      },
+    },
+    { divider: true },
+    {
+      label: "Appearance (web tile)…",
+      icon: "bi-palette",
+      onClick: () => openPaneStyleModal(pane.pane_id),
+    },
+    { divider: true },
+    {
+      label: "Close pane",
+      icon: "bi-x-circle",
+      danger: true,
+      onClick: async () => {
+        if (
+          !confirm(
+            `Close pane ${pane.pane_id}? tmux cannot remove the last pane in a window — close the window instead.`,
+          )
+        ) {
+          return;
+        }
+        await deletePaneApi(pane.pane_id);
+        clearPaneTileStyle(pane.pane_id);
+        toast("Pane closed");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: "Close all OTHER panes here",
+      icon: "bi-x-octagon",
+      danger: true,
+      onClick: async () => {
+        if (isOnly) {
+          toast("No other panes to close.", "warn");
+          return;
+        }
+        if (
+          !confirm(
+            `Close every other pane in window “${window.name || "window"}” and keep ${pane.pane_id}?`,
+          )
+        ) {
+          return;
+        }
+        await postKillOtherPanes(pane.pane_id);
+        toast("Other panes closed");
+        await refresh({ silent: true });
+      },
+    },
+  ];
+}
+
 /**
  * @param {HTMLElement} mosaic
  * @param {object} p
  * @param {"grid" | "list"} mode
- * @param {{ totalW: number }} listCtx
+ * @param {{ totalW: number, window: object, session: object }} listCtx
  */
 function appendPaneToMosaic(mosaic, p, mode, listCtx) {
   const tile = document.createElement("button");
@@ -964,7 +1473,7 @@ function appendPaneToMosaic(mosaic, p, mode, listCtx) {
   if (p.active) {
     tile.setAttribute("aria-current", "true");
   }
-  tile.title = `Focus pane ${p.pane_id}`;
+  tile.title = `Focus pane ${p.pane_id} (${p.command || "shell"})`;
   applyPaneTileAppearance(tile, p.pane_id);
 
   const ph = document.createElement("div");
@@ -983,13 +1492,31 @@ function appendPaneToMosaic(mosaic, p, mode, listCtx) {
   path.textContent = p.cwd || "";
   path.title = p.cwd || "";
 
-  const dim = document.createElement("div");
+  const metaRow = document.createElement("div");
+  metaRow.className = "pane-tile-meta-row";
+  if (p.command) {
+    const cmd = document.createElement("span");
+    cmd.className = "pane-tile-cmd";
+    cmd.textContent = p.command;
+    cmd.title = `Foreground process: ${p.command}${p.pid ? " (pid " + p.pid + ")" : ""}`;
+    metaRow.appendChild(cmd);
+  }
+  if (listCtx.window && listCtx.window.zoomed && p.active) {
+    const zoom = document.createElement("span");
+    zoom.className = "pane-tile-zoom";
+    zoom.textContent = "ZOOM";
+    zoom.title = "Window is zoomed (other panes are hidden in tmux until unzoomed)";
+    metaRow.appendChild(zoom);
+  }
+  const dim = document.createElement("span");
   dim.className = "pane-tile-dim";
   dim.textContent = `${p.width || "?"}×${p.height || "?"}`;
+  dim.style.marginLeft = "auto";
+  metaRow.appendChild(dim);
 
   tile.appendChild(ph);
   tile.appendChild(path);
-  tile.appendChild(dim);
+  tile.appendChild(metaRow);
 
   tile.addEventListener("click", async () => {
     try {
@@ -1001,18 +1528,52 @@ function appendPaneToMosaic(mosaic, p, mode, listCtx) {
     }
   });
 
-  const cog = document.createElement("button");
-  cog.type = "button";
-  cog.className = "pane-tile-cog";
-  cog.setAttribute("aria-label", `Font and colors for pane ${p.pane_id}`);
-  cog.title = "Font and colors (this browser only)";
-  cog.textContent = "⚙";
-  cog.addEventListener(
+  const zoomBtn = document.createElement("button");
+  zoomBtn.type = "button";
+  zoomBtn.className = "pane-tile-zoom-btn" + (listCtx.window && listCtx.window.zoomed ? " is-on" : "");
+  zoomBtn.setAttribute(
+    "aria-label",
+    listCtx.window && listCtx.window.zoomed
+      ? `Unzoom window for pane ${p.pane_id}`
+      : `Zoom pane ${p.pane_id}`,
+  );
+  zoomBtn.title =
+    listCtx.window && listCtx.window.zoomed ? "Unzoom (resize-pane -Z)" : "Zoom pane (resize-pane -Z)";
+  zoomBtn.innerHTML = listCtx.window && listCtx.window.zoomed
+    ? '<i class="bi bi-fullscreen-exit"></i>'
+    : '<i class="bi bi-arrows-fullscreen"></i>';
+  zoomBtn.addEventListener(
     "click",
     (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      openPaneStyleModal(p.pane_id);
+      (async () => {
+        try {
+          await postZoomPane(p.pane_id);
+          toast(listCtx.window && listCtx.window.zoomed ? "Unzoomed" : "Zoomed");
+          await refresh({ silent: true });
+        } catch (e) {
+          toast(String(e.message || e), "err");
+        }
+      })();
+    },
+    true,
+  );
+
+  const menuBtn = document.createElement("button");
+  menuBtn.type = "button";
+  menuBtn.className = "pane-tile-menu";
+  menuBtn.setAttribute("aria-label", `More actions for pane ${p.pane_id}`);
+  menuBtn.setAttribute("aria-haspopup", "menu");
+  menuBtn.setAttribute("aria-expanded", "false");
+  menuBtn.title = "More pane actions (send keys, capture, resize…)";
+  menuBtn.textContent = "⋯";
+  menuBtn.addEventListener(
+    "click",
+    (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openPopover(menuBtn, buildPaneMenuItems(p, listCtx.window || {}, listCtx.session || {}));
     },
     true,
   );
@@ -1051,7 +1612,8 @@ function appendPaneToMosaic(mosaic, p, mode, listCtx) {
 
   const side = document.createElement("div");
   side.className = "pane-tile-side";
-  side.appendChild(cog);
+  side.appendChild(zoomBtn);
+  side.appendChild(menuBtn);
   side.appendChild(del);
 
   if (mode === "grid") {
@@ -1271,166 +1833,368 @@ function renderDetail(session) {
 
   detail.innerHTML = "";
   const windows = session.windows || [];
+
+  if (windows.length > 1) {
+    detail.appendChild(renderWindowTabs(session, windows));
+  }
+
   for (const w of windows) {
-    const block = document.createElement("section");
-    block.className = "win-block";
+    detail.appendChild(renderWindowBlock(session, w, windows.length));
+  }
+}
 
-    const head = document.createElement("div");
-    head.className = "win-head";
+/** Sticky tab bar that scrolls to (and focuses) a window's block. */
+function renderWindowTabs(session, windows) {
+  const bar = document.createElement("nav");
+  bar.className = "win-tabs";
+  bar.setAttribute("aria-label", `Windows in ${session.name}`);
+  const activeWin = windows.find((w) => w.active) || windows[0];
+  for (const w of windows) {
+    const tab = document.createElement("a");
+    tab.href = `#win-${session.name}-${w.index}`;
+    const isActive = w === activeWin;
+    tab.className =
+      "win-tab" +
+      (isActive ? " is-active" : "") +
+      (w.zoomed ? " is-zoomed" : "") +
+      (w.synchronized ? " is-sync" : "");
+    tab.title = `Jump to window #${w.index + 1} (${(w.panes || []).length} panes)${
+      w.zoomed ? " · zoomed" : ""
+    }${w.synchronized ? " · synchronized" : ""}`;
+    const idx = document.createElement("span");
+    idx.className = "win-tab-idx";
+    idx.textContent = `#${w.index + 1}`;
+    const name = document.createElement("span");
+    name.className = "win-tab-name";
+    name.textContent = w.name || "window";
+    const pill = document.createElement("span");
+    pill.className = "win-tab-pill";
+    pill.textContent = String((w.panes || []).length);
+    tab.appendChild(idx);
+    tab.appendChild(name);
+    tab.appendChild(pill);
+    tab.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const target = el(`win-${session.name}-${w.index}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      (async () => {
+        try {
+          await focusWindow(session.name, w.index);
+          await refresh({ silent: true });
+        } catch (e) {
+          toast(String(e.message || e), "err");
+        }
+      })();
+    });
+    bar.appendChild(tab);
+  }
+  return bar;
+}
 
-    const titleCol = document.createElement("div");
-    const wt = document.createElement("div");
-    wt.className = "win-title";
-    const activeBadge = w.active
-      ? ' <span class="win-badge" title="Active window">Active</span>'
-      : "";
-    wt.innerHTML = `<span class="idx">#${w.index + 1}</span>${escapeHtml(w.name || "window")}${activeBadge}`;
-    const wm = document.createElement("div");
-    wm.className = "win-meta";
-    wm.textContent = w.layout_name ? String(w.layout_name) : "layout";
-    wm.title = w.layout_name ? String(w.layout_name) : "";
-    titleCol.appendChild(wt);
-    titleCol.appendChild(wm);
+function renderWindowBlock(session, w, totalWindows) {
+  const block = document.createElement("section");
+  block.className = "win-block";
+  block.id = `win-${session.name}-${w.index}`;
 
-    const addTools = document.createElement("div");
-    addTools.className = "win-add-tools";
-    addTools.setAttribute("role", "toolbar");
-    addTools.setAttribute("aria-label", `Add window or panes in window ${w.index + 1}`);
-    const addLab = document.createElement("span");
-    addLab.className = "tools-label";
-    addLab.textContent = "Add";
-    addTools.appendChild(addLab);
+  block.appendChild(renderWindowHead(session, w, totalWindows));
+  block.appendChild(renderWindowMosaic(session, w));
+  return block;
+}
 
-    const btnNewWin = document.createElement("button");
-    btnNewWin.type = "button";
-    btnNewWin.className = "btn-layout btn-add";
-    btnNewWin.textContent = "Window";
-    btnNewWin.title = "New window in this session";
-    btnNewWin.addEventListener("click", async () => {
+function renderWindowHead(session, w, totalWindows) {
+  const head = document.createElement("div");
+  head.className = "win-head";
+
+  /* Row 1: name + status chips + overflow menu */
+  const row1 = document.createElement("div");
+  row1.className = "win-head-row";
+
+  const nameWrap = document.createElement("div");
+  nameWrap.className = "win-name-wrap";
+  const wt = document.createElement("div");
+  wt.className = "win-title";
+  wt.innerHTML = `<span class="idx">#${w.index + 1}</span>${escapeHtml(w.name || "window")}`;
+  nameWrap.appendChild(wt);
+
+  const renameBtn = document.createElement("button");
+  renameBtn.type = "button";
+  renameBtn.className = "win-rename-btn";
+  renameBtn.title = "Rename window";
+  renameBtn.setAttribute("aria-label", `Rename window ${w.name || "window"}`);
+  renameBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+  renameBtn.addEventListener("click", () => openRenameWindowModal(session.name, w.index, w.name || ""));
+  nameWrap.appendChild(renameBtn);
+  row1.appendChild(nameWrap);
+
+  const status = document.createElement("div");
+  status.className = "win-status-cluster";
+  if (w.active) {
+    status.appendChild(makeChip("Active", "win-chip-active", "bi-broadcast"));
+  }
+  if (w.zoomed) {
+    status.appendChild(makeChip("Zoomed", "win-chip-zoom", "bi-arrows-fullscreen"));
+  }
+  if (w.synchronized) {
+    status.appendChild(makeChip("Sync", "win-chip-sync", "bi-keyboard"));
+  }
+  if (w.layout_name) {
+    const layoutChip = document.createElement("span");
+    layoutChip.className = "win-chip win-chip-layout";
+    layoutChip.textContent = String(w.layout_name);
+    layoutChip.title = `tmux layout string: ${w.layout_name}`;
+    status.appendChild(layoutChip);
+  }
+  const paneCount = (w.panes || []).length;
+  status.appendChild(
+    makeChip(`${paneCount} pane${paneCount === 1 ? "" : "s"}`, "", "bi-grid-3x3"),
+  );
+  row1.appendChild(status);
+
+  const moreBtn = document.createElement("button");
+  moreBtn.type = "button";
+  moreBtn.className = "btn btn-sm btn-outline-secondary win-more-btn";
+  moreBtn.setAttribute("aria-label", `More actions for window ${w.index + 1}`);
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
+  moreBtn.innerHTML = '<i class="bi bi-three-dots"></i>';
+  moreBtn.title = "More window actions";
+  moreBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openPopover(moreBtn, buildWindowMenuItems(session, w, totalWindows));
+  });
+  row1.appendChild(moreBtn);
+
+  head.appendChild(row1);
+
+  /* Row 2: Add + Layout group + Sync toggle + Focus window primary */
+  const row2 = document.createElement("div");
+  row2.className = "win-head-row win-head-row-toolbar";
+
+  /* Add cluster */
+  const addGroup = document.createElement("div");
+  addGroup.className = "win-toolbar-group";
+  addGroup.setAttribute("role", "toolbar");
+  addGroup.setAttribute("aria-label", `Add window or panes in window ${w.index + 1}`);
+  const addLab = document.createElement("span");
+  addLab.className = "tools-label";
+  addLab.textContent = "Add";
+  addGroup.appendChild(addLab);
+  const btnNewWin = document.createElement("button");
+  btnNewWin.type = "button";
+  btnNewWin.className = "btn-layout btn-add";
+  btnNewWin.innerHTML = '<i class="bi bi-window-plus me-1"></i>Window';
+  btnNewWin.title = "New window in this session (Ctrl+B c)";
+  btnNewWin.addEventListener("click", async () => {
+    try {
+      await newWindow(session.name);
+      toast("New window created");
+      await refresh({ silent: true });
+    } catch (e) {
+      toast(String(e.message || e), "err");
+    }
+  });
+  addGroup.appendChild(btnNewWin);
+
+  const panesList = w.panes || [];
+  const paneForSplit = panesList.find((p) => p.active) || panesList[0];
+  const mkSplit = (vertical, label, title) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-layout btn-add";
+    b.innerHTML = label;
+    b.title = title;
+    b.disabled = !paneForSplit;
+    b.addEventListener("click", async () => {
+      if (!paneForSplit) return;
       try {
-        await newWindow(session.name);
-        toast("New window created");
+        await splitPaneApi(paneForSplit.pane_id, vertical);
+        toast(vertical ? "Split (stacked)" : "Split (side by side)");
         await refresh({ silent: true });
       } catch (e) {
         toast(String(e.message || e), "err");
       }
     });
-    addTools.appendChild(btnNewWin);
+    return b;
+  };
+  addGroup.appendChild(
+    mkSplit(true, '<i class="bi bi-layout-split me-1"></i>Pane ↓', "Split active pane — new pane below (tmux split-window -v)"),
+  );
+  addGroup.appendChild(
+    mkSplit(false, '<i class="bi bi-layout-three-columns me-1"></i>Pane →', "Split active pane — new pane to the right (tmux split-window -h)"),
+  );
+  row2.appendChild(addGroup);
 
-    const panesList = w.panes || [];
-    const paneForSplit = panesList.find((p) => p.active) || panesList[0];
-    const mkSplit = (vertical, label, title) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "btn-layout btn-add";
-      b.textContent = label;
-      b.title = title;
-      b.disabled = !paneForSplit;
-      b.addEventListener("click", async () => {
-        if (!paneForSplit) return;
-        try {
-          await splitPaneApi(paneForSplit.pane_id, vertical);
-          toast(vertical ? "Split (stacked)" : "Split (side by side)");
-          await refresh({ silent: true });
-        } catch (e) {
-          toast(String(e.message || e), "err");
-        }
-      });
-      return b;
-    };
-    addTools.appendChild(mkSplit(true, "Pane ↓", "Split active pane — new pane below (tmux split-window -v)"));
-    addTools.appendChild(mkSplit(false, "Pane →", "Split active pane — new pane to the right (tmux split-window -h)"));
-
-    const tools = document.createElement("div");
-    tools.className = "layout-tools";
-    tools.setAttribute("role", "toolbar");
-    tools.setAttribute("aria-label", `Window ${w.index + 1} layouts`);
-    const lab = document.createElement("span");
-    lab.className = "tools-label";
-    lab.textContent = "Layout";
-    tools.appendChild(lab);
-    for (const L of LAYOUTS) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "btn-layout";
-      b.textContent = L.label;
-      b.title = `Apply ${L.kind} layout`;
-      b.addEventListener("click", async () => {
-        try {
-          await applyLayout(session.name, w.index, L.kind);
-          toast(`Layout: ${L.label}`);
-          await refresh({ silent: true });
-        } catch (e) {
-          toast(String(e.message || e), "err");
-        }
-      });
-      tools.appendChild(b);
-    }
-    const delWin = document.createElement("button");
-    delWin.type = "button";
-    delWin.className = "btn-layout btn-layout-danger";
-    delWin.textContent = "Close win";
-    delWin.title = "Kill window (kill-window)";
-    delWin.addEventListener("click", async (ev) => {
-      ev.preventDefault();
-      const wn = w.name || "window";
-      if (
-        !confirm(
-          `Close window #${w.index + 1} "${wn}"? If this is the only window, tmux may end the whole session.`,
-        )
-      ) {
-        return;
-      }
+  /* Layout cluster */
+  const layoutGroup = document.createElement("div");
+  layoutGroup.className = "win-toolbar-group";
+  layoutGroup.setAttribute("role", "toolbar");
+  layoutGroup.setAttribute("aria-label", `Window ${w.index + 1} layouts`);
+  const layoutLab = document.createElement("span");
+  layoutLab.className = "tools-label";
+  layoutLab.textContent = "Layout";
+  layoutGroup.appendChild(layoutLab);
+  for (const L of LAYOUTS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-layout";
+    b.textContent = L.label;
+    b.title = `Apply ${L.kind} layout (tmux select-layout ${L.kind})`;
+    b.addEventListener("click", async () => {
       try {
+        await applyLayout(session.name, w.index, L.kind);
+        toast(`Layout: ${L.label}`);
+        await refresh({ silent: true });
+      } catch (e) {
+        toast(String(e.message || e), "err");
+      }
+    });
+    layoutGroup.appendChild(b);
+  }
+  row2.appendChild(layoutGroup);
+
+  /* Sync toggle */
+  const syncBtn = document.createElement("button");
+  syncBtn.type = "button";
+  syncBtn.className = "win-sync-toggle" + (w.synchronized ? " is-on" : "");
+  syncBtn.setAttribute("aria-pressed", w.synchronized ? "true" : "false");
+  syncBtn.title = w.synchronized
+    ? "Synchronize panes is ON — keystrokes mirror to every pane in this window"
+    : "Toggle synchronize-panes — type once, run in every pane";
+  syncBtn.innerHTML = `<span class="win-sync-glyph" aria-hidden="true">⇆</span>Sync ${w.synchronized ? "On" : "Off"}`;
+  syncBtn.addEventListener("click", async () => {
+    try {
+      await postSynchronizeWindow(session.name, w.index, !w.synchronized);
+      toast(`Synchronize-panes: ${!w.synchronized ? "on" : "off"}`);
+      await refresh({ silent: true });
+    } catch (e) {
+      toast(String(e.message || e), "err");
+    }
+  });
+  row2.appendChild(syncBtn);
+
+  const spacer = document.createElement("div");
+  spacer.className = "win-toolbar-spacer";
+  row2.appendChild(spacer);
+
+  /* Focus button */
+  const fw = document.createElement("button");
+  fw.type = "button";
+  fw.className = "btn-layout primary-action";
+  fw.innerHTML = '<i class="bi bi-bullseye me-1"></i>Focus window';
+  fw.title = "Select this window in tmux (select-window)";
+  fw.addEventListener("click", async () => {
+    try {
+      await focusWindow(session.name, w.index);
+      toast("Window focused");
+      await refresh({ silent: true });
+    } catch (e) {
+      toast(String(e.message || e), "err");
+    }
+  });
+  row2.appendChild(fw);
+
+  head.appendChild(row2);
+  return head;
+}
+
+function makeChip(label, extraClass, icon) {
+  const c = document.createElement("span");
+  c.className = "win-chip" + (extraClass ? ` ${extraClass}` : "");
+  if (icon) {
+    c.innerHTML = `<i class="bi ${icon} win-chip-icon" aria-hidden="true"></i>${escapeHtml(label)}`;
+  } else {
+    c.textContent = label;
+  }
+  return c;
+}
+
+function buildWindowMenuItems(session, w, totalWindows) {
+  return [
+    { section: "Window" },
+    {
+      label: "Rename window…",
+      icon: "bi-pencil",
+      onClick: () => openRenameWindowModal(session.name, w.index, w.name || ""),
+    },
+    {
+      label: "Move ← (swap with previous)",
+      icon: "bi-arrow-left",
+      onClick: async () => {
+        if (w.index <= 0) {
+          toast("Already the first window.", "warn");
+          return;
+        }
+        await postMoveWindow(session.name, w.index, "left");
+        toast("Window moved left");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: "Move → (swap with next)",
+      icon: "bi-arrow-right",
+      onClick: async () => {
+        if (w.index >= totalWindows - 1) {
+          toast("Already the last window.", "warn");
+          return;
+        }
+        await postMoveWindow(session.name, w.index, "right");
+        toast("Window moved right");
+        await refresh({ silent: true });
+      },
+    },
+    {
+      label: w.synchronized ? "Disable synchronize-panes" : "Enable synchronize-panes",
+      icon: "bi-keyboard",
+      onClick: async () => {
+        await postSynchronizeWindow(session.name, w.index, !w.synchronized);
+        toast(`Synchronize-panes: ${!w.synchronized ? "on" : "off"}`);
+        await refresh({ silent: true });
+      },
+    },
+    { divider: true },
+    {
+      label: "Close window",
+      icon: "bi-x-circle",
+      danger: true,
+      onClick: async () => {
+        const wn = w.name || "window";
+        if (
+          !confirm(
+            `Close window #${w.index + 1} "${wn}"? If this is the only window, tmux may end the whole session.`,
+          )
+        ) {
+          return;
+        }
         await deleteWindowApi(session.name, w.index);
         toast("Window closed");
         await refresh({ silent: true });
-      } catch (e) {
-        toast(String(e.message || e), "err");
-      }
-    });
-    tools.appendChild(delWin);
-    const fw = document.createElement("button");
-    fw.type = "button";
-    fw.className = "btn-layout primary-action";
-    fw.textContent = "Focus window";
-    fw.title = "Select this window in tmux";
-    fw.addEventListener("click", async () => {
-      try {
-        await focusWindow(session.name, w.index);
-        toast("Window focused");
-        await refresh({ silent: true });
-      } catch (e) {
-        toast(String(e.message || e), "err");
-      }
-    });
-    tools.appendChild(fw);
+      },
+    },
+  ];
+}
 
-    head.appendChild(titleCol);
-    head.appendChild(addTools);
-    head.appendChild(tools);
-    block.appendChild(head);
+function renderWindowMosaic(session, w) {
+  const panes = w.panes || [];
+  const totalW = panes.reduce((s, p) => s + Math.max(p.width || 0, 1), 0) || 1;
+  const useTmuxGrid = tmuxPanePositionsDistinct(panes);
+  const { gridW, gridH } = tmuxPaneGridDimensions(panes);
 
-    const panes = w.panes || [];
-    const totalW = panes.reduce((s, p) => s + Math.max(p.width || 0, 1), 0) || 1;
-    const useTmuxGrid = tmuxPanePositionsDistinct(panes);
-    const { gridW, gridH } = tmuxPaneGridDimensions(panes);
-
-    const mosaic = document.createElement("div");
-    mosaic.className = "pane-mosaic" + (useTmuxGrid ? " pane-mosaic--tmux" : " pane-mosaic--list");
-    mosaic.setAttribute("role", "list");
-    if (useTmuxGrid) {
-      mosaic.style.setProperty("--tmux-cols", String(gridW));
-      mosaic.style.setProperty("--tmux-rows", String(gridH));
-    }
-
-    const mode = useTmuxGrid ? "grid" : "list";
-    for (const p of panes) {
-      appendPaneToMosaic(mosaic, p, mode, { totalW });
-    }
-    block.appendChild(mosaic);
-    detail.appendChild(block);
+  const mosaic = document.createElement("div");
+  mosaic.className = "pane-mosaic" + (useTmuxGrid ? " pane-mosaic--tmux" : " pane-mosaic--list");
+  mosaic.setAttribute("role", "list");
+  if (useTmuxGrid) {
+    mosaic.style.setProperty("--tmux-cols", String(gridW));
+    mosaic.style.setProperty("--tmux-rows", String(gridH));
   }
+
+  const mode = useTmuxGrid ? "grid" : "list";
+  for (const p of panes) {
+    appendPaneToMosaic(mosaic, p, mode, { totalW, window: w, session });
+  }
+  return mosaic;
 }
 
 function escapeHtml(s) {
@@ -1643,15 +2407,47 @@ document.addEventListener("keydown", (ev) => {
   const tag = (ev.target && ev.target.tagName) || "";
   const inField = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
   const inDialog = ev.target && ev.target.closest && ev.target.closest("dialog[open]");
+  const now = Date.now();
+  if (!inField && !inDialog && chordLeader && now - chordLeaderAt > 1200) {
+    chordLeader = null;
+  }
+
+  if (!inField && !inDialog && chordLeader === "g") {
+    if (ev.key === "s" || ev.key === "S") {
+      ev.preventDefault();
+      chordLeader = null;
+      switchMainView("sessions");
+      return;
+    }
+    if (ev.key === "p" || ev.key === "P") {
+      ev.preventDefault();
+      chordLeader = null;
+      switchMainView("plugins");
+      return;
+    }
+  }
 
   if (ev.key === "/" && !inField && !inDialog && mainView === "sessions") {
     ev.preventDefault();
     el("filter").focus();
     el("filter").select();
+    chordLeader = null;
   }
   if ((ev.key === "r" || ev.key === "R") && !inField && !inDialog) {
     ev.preventDefault();
     refresh();
+    chordLeader = null;
+  }
+  if ((ev.key === "n" || ev.key === "N") && !inField && !inDialog && mainView === "sessions") {
+    ev.preventDefault();
+    el("btn-new-session")?.click();
+    chordLeader = null;
+  }
+  if ((ev.key === "g" || ev.key === "G") && !inField && !inDialog) {
+    ev.preventDefault();
+    chordLeader = "g";
+    chordLeaderAt = now;
+    return;
   }
 });
 
@@ -1690,22 +2486,11 @@ el("btn-save-snapshot").addEventListener("click", async () => {
 });
 
 el("nav-sessions")?.addEventListener("click", async () => {
-  if (mainView === "sessions") return;
-  mainView = "sessions";
-  applyMainView();
-  await refresh({ silent: true });
+  await switchMainView("sessions");
 });
 
 el("nav-plugins")?.addEventListener("click", () => {
-  if (mainView === "plugins") return;
-  mainView = "plugins";
-  const vt = el("view-title");
-  const vm = el("view-meta");
-  const sm = el("sync-meta");
-  if (vt) vt.textContent = "Plugins (TPM)";
-  if (vm) vm.textContent = "Bundled tmux-plugins/tpm · ~/.tmux/plugins";
-  if (sm) sm.textContent = "";
-  applyMainView();
+  switchMainView("plugins");
 });
 
 el("form-add-plugin")?.addEventListener("submit", async (ev) => {
@@ -1739,7 +2524,16 @@ async function runPluginOp(btn, path, okMsg) {
         : path === "apply-defaults"
           ? await postPluginsApplyDefaults()
           : await postPluginsAction(path);
-    toast(data.output ? `${okMsg}: ${data.output.slice(0, 200)}` : okMsg);
+    if (path === "bootstrap" || path === "remove-tmux-hook") {
+      const detail = data.detail && String(data.detail).trim();
+      const tc = data.tmux_conf && String(data.tmux_conf).trim();
+      const parts = [okMsg];
+      if (detail) parts.push(detail);
+      else if (tc) parts.push(tc);
+      toast(parts.join(" — "));
+    } else {
+      toast(data.output ? `${okMsg}: ${data.output.slice(0, 200)}` : okMsg);
+    }
     await loadPluginsPanel();
   } catch (e) {
     toast(String(e.message || e), "err");
@@ -1750,6 +2544,9 @@ async function runPluginOp(btn, path, okMsg) {
 
 el("btn-plugins-bootstrap")?.addEventListener("click", () =>
   runPluginOp(el("btn-plugins-bootstrap"), "bootstrap", "Bootstrap done"),
+);
+el("btn-plugins-remove-tmux-hook")?.addEventListener("click", () =>
+  runPluginOp(el("btn-plugins-remove-tmux-hook"), "remove-tmux-hook", "tmux.conf hook"),
 );
 el("btn-plugins-apply-defaults")?.addEventListener("click", () =>
   runPluginOp(
@@ -1767,9 +2564,8 @@ el("btn-plugins-update")?.addEventListener("click", () =>
 el("btn-plugins-clean")?.addEventListener("click", () =>
   runPluginOp(el("btn-plugins-clean"), "clean", "Clean finished"),
 );
-el("btn-plugins-source")?.addEventListener("click", () =>
-  runPluginOp(el("btn-plugins-source"), "source", "Reloaded in tmux"),
-);
+el("btn-plugins-source")?.addEventListener("click", () => sourceFragmentInTmux());
+el("modal-plugins-fragment-source")?.addEventListener("click", () => sourceFragmentInTmux());
 
 async function savePluginsFragmentFromModal() {
   const saveBtn = el("modal-plugins-fragment-save");
@@ -1787,7 +2583,8 @@ async function savePluginsFragmentFromModal() {
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-    toast("plugins.tmux saved");
+    const savedPath = j.path && String(j.path).trim();
+    toast(savedPath ? `Saved: ${savedPath}` : "plugins.tmux saved");
     if (typeof globalThis.dmuxPluginsFragmentMarkClean === "function") {
       globalThis.dmuxPluginsFragmentMarkClean();
     }
@@ -1812,7 +2609,15 @@ async function openPluginsFragmentModal() {
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-    pathEl.textContent = j.path || "—";
+    const absPath = j.path && String(j.path).trim() ? String(j.path) : "—";
+    pathEl.textContent = absPath;
+    const saveBtn = el("modal-plugins-fragment-save");
+    if (saveBtn) {
+      saveBtn.title =
+        absPath !== "—"
+          ? `Write editor contents to this file: ${absPath}`
+          : "Save plugins.tmux";
+    }
     const text = j.exists
       ? String(j.content ?? "")
       : "# New fragment — Save to write plugins.tmux\n";
@@ -1869,8 +2674,267 @@ el("modal-plugins-fragment")?.addEventListener("cancel", (ev) => {
 
 globalThis.dmuxOnSavePluginsFragment = savePluginsFragmentFromModal;
 
+/* =========================================================
+ * Send-keys modal wiring
+ * ========================================================= */
+
+function openSendKeysModal(paneId) {
+  const d = el("modal-send-keys");
+  const hid = el("send-keys-pane-id");
+  const txt = el("send-keys-text");
+  const enter = el("send-keys-enter");
+  const literal = el("send-keys-literal");
+  const disp = el("send-keys-pane-display");
+  if (!d || !hid || !txt) return;
+  hid.value = paneId;
+  if (disp) disp.textContent = `Pane: ${paneId}`;
+  txt.value = "";
+  if (enter) enter.checked = true;
+  if (literal) literal.checked = false;
+  try {
+    d.showModal();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+    return;
+  }
+  requestAnimationFrame(() => txt.focus());
+}
+
+el("send-keys-cancel")?.addEventListener("click", () => el("modal-send-keys")?.close());
+
+document.querySelectorAll("[data-send-key]").forEach((btn) => {
+  btn.addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    const paneId = String(el("send-keys-pane-id")?.value || "").trim();
+    if (!paneId) return;
+    const key = String(btn.getAttribute("data-send-key") || "");
+    const literal = (btn.getAttribute("data-send-literal") || "false") === "true";
+    const enter = (btn.getAttribute("data-send-enter") || "false") === "true";
+    if (!key) return;
+    btn.disabled = true;
+    try {
+      await postSendKeys(paneId, { text: key, enter, literal });
+      toast(`Sent ${key}`);
+    } catch (e) {
+      toast(String(e.message || e), "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
+
+el("form-send-keys")?.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const submit = el("send-keys-submit");
+  const paneId = String(el("send-keys-pane-id")?.value || "").trim();
+  const text = String(el("send-keys-text")?.value ?? "");
+  if (!paneId || !text) return;
+  const enter = !!el("send-keys-enter")?.checked;
+  const literal = !!el("send-keys-literal")?.checked;
+  if (submit) submit.disabled = true;
+  try {
+    await postSendKeys(paneId, { text, enter, literal });
+    toast(`Sent to ${paneId}`);
+    el("modal-send-keys")?.close();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+});
+
+/* =========================================================
+ * Capture modal wiring
+ * ========================================================= */
+
+let _captureFollowTimer = null;
+let _captureCurrentPane = null;
+
+function captureLines() {
+  const v = parseInt(el("capture-lines")?.value || "200", 10);
+  return Number.isFinite(v) && v >= 0 ? v : 200;
+}
+
+async function refreshCapture() {
+  const out = el("capture-output");
+  const meta = el("capture-meta");
+  if (!out || !_captureCurrentPane) return;
+  try {
+    const t = await getPaneCapture(_captureCurrentPane, captureLines());
+    out.textContent = t || "(empty)";
+    if (meta) {
+      meta.innerHTML = `<span><strong>${escapeHtml(_captureCurrentPane)}</strong></span><span>${t.split("\n").length} lines</span><span>${formatSyncTime()}</span>`;
+    }
+  } catch (e) {
+    out.textContent = `Error: ${String(e.message || e)}`;
+  }
+}
+
+function stopCaptureFollow() {
+  if (_captureFollowTimer) clearInterval(_captureFollowTimer);
+  _captureFollowTimer = null;
+}
+
+function openCaptureModal(paneId) {
+  const d = el("modal-capture");
+  if (!d) return;
+  _captureCurrentPane = paneId;
+  const follow = el("capture-follow");
+  if (follow) follow.checked = false;
+  stopCaptureFollow();
+  try {
+    d.showModal();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+    return;
+  }
+  refreshCapture();
+}
+
+el("capture-close")?.addEventListener("click", () => {
+  stopCaptureFollow();
+  _captureCurrentPane = null;
+  el("modal-capture")?.close();
+});
+el("modal-capture")?.addEventListener("close", () => {
+  stopCaptureFollow();
+  _captureCurrentPane = null;
+});
+el("capture-refresh")?.addEventListener("click", () => refreshCapture());
+el("capture-follow")?.addEventListener("change", (ev) => {
+  stopCaptureFollow();
+  if (ev.target.checked && _captureCurrentPane) {
+    _captureFollowTimer = setInterval(refreshCapture, 1000);
+    refreshCapture();
+  }
+});
+el("capture-lines")?.addEventListener("change", () => refreshCapture());
+el("capture-copy")?.addEventListener("click", async () => {
+  const out = el("capture-output");
+  if (!out) return;
+  try {
+    await navigator.clipboard.writeText(out.textContent || "");
+    toast("Capture copied to clipboard");
+  } catch (e) {
+    toast(`Copy failed: ${String(e.message || e)}`, "err");
+  }
+});
+
+/* =========================================================
+ * Resize modal wiring (d-pad)
+ * ========================================================= */
+
+function openResizeModal(paneId) {
+  const d = el("modal-resize");
+  const hid = el("resize-pane-id");
+  const disp = el("resize-pane-display");
+  if (!d || !hid) return;
+  hid.value = paneId;
+  if (disp) disp.textContent = `Pane: ${paneId}`;
+  try {
+    d.showModal();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+  }
+}
+
+el("resize-close")?.addEventListener("click", () => el("modal-resize")?.close());
+
+document.querySelectorAll("#modal-resize [data-resize-dir]").forEach((btn) => {
+  btn.addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    const paneId = String(el("resize-pane-id")?.value || "").trim();
+    if (!paneId) return;
+    const step = Math.max(1, parseInt(el("resize-step")?.value || "5", 10) || 5);
+    const dir = btn.getAttribute("data-resize-dir");
+    let dx = 0;
+    let dy = 0;
+    if (dir === "left") dx = -step;
+    else if (dir === "right") dx = step;
+    else if (dir === "up") dy = -step;
+    else if (dir === "down") dy = step;
+    btn.disabled = true;
+    try {
+      await postResizePane(paneId, dx, dy);
+      await refresh({ silent: true });
+    } catch (e) {
+      toast(String(e.message || e), "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
+
+/* =========================================================
+ * Rename-window modal wiring
+ * ========================================================= */
+
+function openRenameWindowModal(sessionName, windowIndex, currentName) {
+  const d = el("modal-rename-window");
+  const sess = el("rename-win-session");
+  const idx = el("rename-win-index");
+  const inp = el("rename-win-name");
+  const disp = el("rename-win-display");
+  if (!d || !sess || !idx || !inp) return;
+  sess.value = sessionName;
+  idx.value = String(windowIndex);
+  inp.value = currentName || "";
+  if (disp) disp.textContent = `${sessionName} · window #${windowIndex + 1}`;
+  try {
+    d.showModal();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+    return;
+  }
+  requestAnimationFrame(() => {
+    inp.focus();
+    inp.select();
+  });
+}
+
+el("rename-win-cancel")?.addEventListener("click", () => el("modal-rename-window")?.close());
+
+el("form-rename-window")?.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const submit = el("rename-win-submit");
+  const sess = String(el("rename-win-session")?.value || "").trim();
+  const idx = parseInt(String(el("rename-win-index")?.value || ""), 10);
+  const name = String(el("rename-win-name")?.value || "").trim();
+  if (!sess || !Number.isFinite(idx) || !name) return;
+  if (submit) submit.disabled = true;
+  try {
+    await patchRenameWindow(sess, idx, name);
+    toast(`Renamed to “${name}”`);
+    el("modal-rename-window")?.close();
+    await refresh({ silent: true });
+  } catch (e) {
+    toast(String(e.message || e), "err");
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+});
+
+/* =========================================================
+ * Server info in topbar (lazy, on first refresh)
+ * ========================================================= */
+
+async function loadServerInfo() {
+  const info = await fetchServerInfo();
+  if (!info) return;
+  const meta = el("sync-meta");
+  if (!meta) return;
+  const v = info.version ? String(info.version) : "";
+  const sock = info.socket_path ? `socket ${info.socket_path}` : "default socket";
+  const clients = info.clients ? `${info.clients} client${info.clients === "1" ? "" : "s"}` : "0 clients";
+  const extra = `<span class="server-info">· ${escapeHtml(v)} · ${escapeHtml(sock)} · ${escapeHtml(clients)}</span>`;
+  // Append once; remove existing tail if present.
+  const html = meta.innerHTML;
+  const idx = html.indexOf('<span class="server-info">');
+  meta.innerHTML = (idx >= 0 ? html.slice(0, idx) : html) + extra;
+}
+
 updateFilterClear();
 setupPaneStyleForm();
 setupPluginSpecAutocomplete();
-refresh();
+refresh().then(() => loadServerInfo());
 setupAutoRefresh();

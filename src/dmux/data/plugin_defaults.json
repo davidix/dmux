@@ -1,14 +1,179 @@
 {
+  "Freed-Wu/tmux-status-bar": {
+    "lines": [
+      "# tmux-status-bar — customize via #{status-left:…} #{status-right:…} and window-status helpers (not @vars). Docs: https://github.com/Freed-Wu/tmux-status-bar",
+      "# REQUIRES `tmux-powerline-compiler` on PATH. Without it the plugin SILENTLY clears status-left/status-right on every source-file (blank status bar).",
+      "# Build it: `brew install xmake flex bison && cd ~/.tmux/plugins/tmux-status-bar && xmake`  — or `cpan tmux-status-bar` for the perl variant.",
+      "# Do not put raw % in status-left/status-right here: tmux treats % as strftime (e.g. %s → Unix time). Use #{…}, #(…), or segments without a “format” lead.",
+      "#   set -g window-status-current-format \"#{window-status-current-format-left:[format;][sep;]fg_color,bg_color,text;[sep]}\"",
+      "set -g status-left \"#{status-left:#fffafa,black,#S;}\"",
+      "set -g status-right \"#{status-right:white,colour04,#{session_name};}\""
+    ]
+  },
   "tmux-plugins/tmux-resurrect": {
-    "lines": ["set -g @resurrect-capture-pane-contents 'on'"]
+    "lines": [
+      "# Persist tmux state across restarts. Docs: https://github.com/tmux-plugins/tmux-resurrect",
+      "set -g @resurrect-capture-pane-contents 'on'"
+    ]
   },
   "tmux-plugins/tmux-continuum": {
     "lines": [
+      "# Auto-save + restore tmux state (pairs with tmux-resurrect). Docs: https://github.com/tmux-plugins/tmux-continuum",
       "set -g @continuum-restore 'on'",
       "set -g @continuum-save-interval '60'"
     ]
   },
   "tmux-plugins/tmux-sidebar": {
-    "lines": ["set -g @sidebar-width '40'"]
+    "lines": [
+      "# IDE-like sidebar with directory tree. Docs: https://github.com/tmux-plugins/tmux-sidebar",
+      "set -g @sidebar-width '40'"
+    ]
+  },
+  "tmux-plugins/tmux-yank": {
+    "lines": [
+      "# Copy to system clipboard. Docs: https://github.com/tmux-plugins/tmux-yank",
+      "set -g @yank_selection_mouse 'clipboard'",
+      "set -g @yank_action 'copy-pipe-no-clear'"
+    ]
+  },
+  "tmux-plugins/tmux-prefix-highlight": {
+    "lines": [
+      "# Show prefix-key activity in the status bar. Docs: https://github.com/tmux-plugins/tmux-prefix-highlight",
+      "set -g @prefix_highlight_show_copy_mode 'on'",
+      "set -g @prefix_highlight_show_sync_mode 'on'"
+    ]
+  },
+  "tmux-plugins/tmux-battery": {
+    "lines": [
+      "# Append #{battery_status_bg} #{battery_icon} #{battery_percentage} to your status-right manually.",
+      "set -g @batt_icon_charge_tier8 '🌕'",
+      "set -g @batt_icon_charge_tier4 '🌗'"
+    ]
+  },
+  "tmux-plugins/tmux-cpu": {
+    "lines": [
+      "# Append CPU/RAM segments to status-right manually, e.g. #{cpu_bg_color} #{cpu_icon} #{cpu_percentage}.",
+      "set -g @cpu_low_icon '='",
+      "set -g @cpu_medium_icon '≡'",
+      "set -g @cpu_high_icon '☰'"
+    ]
+  },
+  "tmux-plugins/tmux-pain-control": {
+    "lines": [
+      "# Standard pane key-bindings. Docs: https://github.com/tmux-plugins/tmux-pain-control",
+      "set -g @pane_resize '5'"
+    ]
+  },
+  "tmux-plugins/tmux-sensible": {
+    "lines": [
+      "# Basic settings everyone agrees on; no options needed. Docs: https://github.com/tmux-plugins/tmux-sensible",
+      "# (intentionally no @vars)"
+    ]
+  },
+  "catppuccin/tmux": {
+    "lines": [
+      "# Catppuccin theme. Docs: https://github.com/catppuccin/tmux",
+      "set -g @catppuccin_flavour 'mocha'",
+      "set -g @catppuccin_window_status_style 'rounded'",
+      "set -g @catppuccin_window_default_text '#W'",
+      "set -g @catppuccin_window_current_text '#W'",
+      "set -g @catppuccin_status_modules_right 'session date_time'"
+    ]
+  },
+  "dracula/tmux": {
+    "lines": [
+      "# Dracula theme. Docs: https://github.com/dracula/tmux",
+      "set -g @dracula-plugins 'cpu-usage ram-usage time'",
+      "set -g @dracula-show-powerline true",
+      "set -g @dracula-show-flags true"
+    ]
+  },
+  "rose-pine/tmux": {
+    "lines": [
+      "# Rose Pine theme. Docs: https://github.com/rose-pine/tmux",
+      "set -g @rose_pine_variant 'main'",
+      "set -g @rose_pine_host 'on'",
+      "set -g @rose_pine_date_time ''",
+      "set -g @rose_pine_user 'on'"
+    ]
+  },
+  "nordtheme/tmux": {
+    "lines": [
+      "# Nord theme. Docs: https://github.com/nordtheme/tmux"
+    ]
+  },
+  "MunifTanjim/tmux-mode-indicator": {
+    "lines": [
+      "# Mode indicator widget. Docs: https://github.com/MunifTanjim/tmux-mode-indicator",
+      "set -g @mode_indicator_prefix_prompt ' WAIT '",
+      "set -g @mode_indicator_copy_prompt ' COPY '",
+      "set -g @mode_indicator_sync_prompt ' SYNC '",
+      "set -g @mode_indicator_empty_prompt ' TMUX '"
+    ]
+  },
+  "MunifTanjim/tmux-suspend": {
+    "lines": [
+      "# Suspend nested-tmux toggling. Docs: https://github.com/MunifTanjim/tmux-suspend",
+      "set -g @suspend_key 'F12'"
+    ]
+  },
+  "sainnhe/tmux-fzf": {
+    "lines": [
+      "# fzf-driven tmux helpers. Docs: https://github.com/sainnhe/tmux-fzf",
+      "TMUX_FZF_LAUNCH_KEY='F'"
+    ]
+  },
+  "wfxr/tmux-fzf-url": {
+    "lines": [
+      "# Open URLs from terminal output via fzf. Docs: https://github.com/wfxr/tmux-fzf-url",
+      "set -g @fzf-url-bind 'u'",
+      "set -g @fzf-url-history-limit '2000'"
+    ]
+  },
+  "omerxx/tmux-sessionx": {
+    "lines": [
+      "# Sessionx fzf-style switcher. Docs: https://github.com/omerxx/tmux-sessionx",
+      "set -g @sessionx-bind 'o'",
+      "set -g @sessionx-zoxide-mode 'on'"
+    ]
+  },
+  "joshmedeski/sesh": {
+    "lines": [
+      "# `sesh` smart session manager — install the binary first: `brew install joshmedeski/sesh/sesh`.",
+      "# Bind a key in your tmux config to: run-shell \"sesh connect $(sesh list | fzf-tmux -p 55%,60%)\""
+    ]
+  },
+  "tmux-plugins/tmux-fpp": {
+    "lines": [
+      "# tmux-fpp — open paths in $EDITOR. Requires Facebook PathPicker on PATH (brew install fpp)."
+    ]
+  },
+  "tmux-plugins/tmux-open": {
+    "lines": [
+      "# tmux-open — `o` opens highlighted files/URLs. Docs: https://github.com/tmux-plugins/tmux-open",
+      "set -g @open-S 'https://duckduckgo.com/?q='"
+    ]
+  },
+  "tmux-plugins/tmux-online-status": {
+    "lines": [
+      "# tmux-online-status — append #{online_status} to your status-right manually."
+    ]
+  },
+  "tmux-plugins/tmux-net-speed": {
+    "lines": [
+      "# tmux-net-speed — append #{net_speed} to your status-right manually."
+    ]
+  },
+  "alexwforsythe/tmux-which-key": {
+    "lines": [
+      "# tmux-which-key popup. Docs: https://github.com/alexwforsythe/tmux-which-key",
+      "set -g @tmux-which-key-xdg-enable 1"
+    ]
+  },
+  "ofirgall/tmux-window-name": {
+    "lines": [
+      "# tmux-window-name — smart auto-rename. Docs: https://github.com/ofirgall/tmux-window-name",
+      "set -g @tmux_window_name_use_tilde 'True'"
+    ]
   }
 }

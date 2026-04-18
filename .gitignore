@@ -10,3 +10,5 @@ build/
 venv/
 .env
 *.db-journal
+.DS_Store
+*.zip

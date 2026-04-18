@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="dmux">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="55%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+    <filter id="s" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#0b0d12" flood-opacity="0.25" />
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="14" ry="14" fill="url(#g)" />
+  <g filter="url(#s)" fill="#ffffff" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="800">
+    <text x="32" y="42" text-anchor="middle" font-size="34" letter-spacing="-1.5">d</text>
+  </g>
+  <g stroke="#ffffff" stroke-opacity="0.55" stroke-width="1.8" stroke-linecap="round">
+    <line x1="14" y1="50" x2="22" y2="50" />
+    <line x1="42" y1="50" x2="50" y2="50" />
+  </g>
+</svg>

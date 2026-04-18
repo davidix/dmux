@@ -19,6 +19,8 @@ class PaneDTO:
     height: int
     left: int  # tmux #{pane_left}, character column of top-left cell
     top: int  # tmux #{pane_top}, character row of top-left cell
+    command: str = ""  # tmux #{pane_current_command} (foreground process)
+    pid: int = 0  # tmux #{pane_pid}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,8 @@ class WindowDTO:
     active: bool
     layout_name: str | None
     panes: tuple[PaneDTO, ...]
+    zoomed: bool = False  # tmux window-zoomed-flag
+    synchronized: bool = False  # tmux window option synchronize-panes
 
 
 @dataclass(frozen=True, slots=True)

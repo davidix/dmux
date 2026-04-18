@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="dmux  one control layer over tmux">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0d12" />
+      <stop offset="100%" stop-color="#161922" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="55%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="0%" r="60%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.45" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0" />
+    </radialGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M 56 0 L 0 0 0 56" fill="none" stroke="rgba(148,163,184,0.08)" stroke-width="1" />
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <rect width="1200" height="630" fill="url(#grid)" />
+  <rect width="1200" height="630" fill="url(#glow)" />
+
+  <!-- logo -->
+  <g transform="translate(72, 72)">
+    <rect width="72" height="72" rx="16" fill="url(#accent)" />
+    <text
+      x="36" y="51"
+      text-anchor="middle"
+      font-family="'JetBrains Mono', monospace"
+      font-weight="800"
+      font-size="42"
+      fill="#ffffff"
+      letter-spacing="-2"
+    >d</text>
+    <text
+      x="100" y="50"
+      font-family="Inter, system-ui, -apple-system, sans-serif"
+      font-weight="800"
+      font-size="36"
+      fill="#f1f5f9"
+      letter-spacing="-1"
+    >dmux</text>
+  </g>
+
+  <!-- headline -->
+  <g transform="translate(72, 230)">
+    <text
+      font-family="Inter, system-ui, -apple-system, sans-serif"
+      font-weight="800"
+      font-size="76"
+      fill="#f1f5f9"
+      letter-spacing="-2.5"
+    >
+      <tspan x="0" y="0">One control layer</tspan>
+      <tspan x="0" y="84">over <tspan fill="url(#accent)">tmux</tspan>.</tspan>
+    </text>
+    <text
+      x="0" y="180"
+      font-family="Inter, system-ui, -apple-system, sans-serif"
+      font-weight="500"
+      font-size="26"
+      fill="#cbd5e1"
+      letter-spacing="-0.4"
+    >
+      Sessions · SQLite persistence · TPM plugins · Status-bar wizard · Web UI
+    </text>
+  </g>
+
+  <!-- terminal preview -->
+  <g transform="translate(72, 470)">
+    <rect width="1056" height="100" rx="12" fill="#11141b" stroke="rgba(148,163,184,0.18)" stroke-width="1" />
+    <circle cx="22" cy="22" r="6" fill="#ff5f56" />
+    <circle cx="42" cy="22" r="6" fill="#ffbd2e" />
+    <circle cx="62" cy="22" r="6" fill="#27c93f" />
+    <text
+      x="28" y="76"
+      font-family="'JetBrains Mono', monospace"
+      font-size="22"
+      fill="#e5e7eb"
+    >
+      <tspan fill="#f0abfc">$</tspan>
+      <tspan fill="#e5e7eb"> dmux ui --open</tspan>
+      <tspan fill="#9ca3af">     ’  serving on </tspan>
+      <tspan fill="#93c5fd">http://127.0.0.1:8756</tspan>
+    </text>
+  </g>
+
+  <!-- footer chip -->
+  <g transform="translate(960, 88)">
+    <rect width="170" height="40" rx="20" fill="rgba(99,102,241,0.16)" stroke="rgba(129,140,248,0.4)" stroke-width="1" />
+    <text
+      x="85" y="26"
+      text-anchor="middle"
+      font-family="Inter, system-ui, sans-serif"
+      font-weight="600"
+      font-size="14"
+      fill="#a5b4fc"
+    >MIT · Python 3.10+</text>
+  </g>
+</svg>

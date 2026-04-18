@@ -349,6 +349,11 @@ class TmuxService:
         for window in session.windows:
             panes: list[PaneDTO] = []
             for pane in window.panes:
+                pid_raw = getattr(pane, "pane_pid", None)
+                try:
+                    pid_int = int(str(pid_raw)) if pid_raw is not None else 0
+                except (TypeError, ValueError):
+                    pid_int = 0
                 panes.append(
                     PaneDTO(
                         pane_id=_txt(pane.pane_id),
@@ -362,8 +367,12 @@ class TmuxService:
                         height=_dim(pane.pane_height),
                         left=_dim(pane.pane_left),
                         top=_dim(pane.pane_top),
+                        command=_txt(getattr(pane, "pane_current_command", ""), ""),
+                        pid=pid_int,
                     )
                 )
+            zoomed_raw = getattr(window, "window_zoomed_flag", "0")
+            sync_raw = self._show_window_option_safe(window, "synchronize-panes")
             wins.append(
                 WindowDTO(
                     window_id=_txt(window.window_id),
@@ -373,6 +382,8 @@ class TmuxService:
                     active=(window == session.active_window),
                     layout_name=window.window_layout,
                     panes=tuple(panes),
+                    zoomed=str(zoomed_raw or "0") == "1",
+                    synchronized=str(sync_raw or "off").lower() in {"on", "1"},
                 )
             )
         return SessionDTO(
@@ -381,3 +392,182 @@ class TmuxService:
             attached=session.session_attached != "0",
             windows=tuple(wins),
         )
+
+    def _show_window_option_safe(self, window: Window, option: str) -> str:
+        """Return the value of a window-scoped tmux option, or "" on any error.
+
+        We intentionally swallow errors because list-sessions polls this, and
+        a missing option must never break the response.
+        """
+        target = _txt(window.window_id, "")
+        if not target:
+            return ""
+        try:
+            cmd = self._tmux_cli_base() + ["show-window", "-vt", target, option]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=4, check=False)
+            if r.returncode != 0:
+                return ""
+            return (r.stdout or "").strip()
+        except (subprocess.TimeoutExpired, OSError, DmuxError):
+            return ""
+
+    # ------------------------------------------------------------------
+    # Pane / window mutation helpers (used by the JSON API)
+    # ------------------------------------------------------------------
+
+    def send_keys(
+        self,
+        pane_id: str,
+        text: str,
+        *,
+        enter: bool = True,
+        literal: bool = False,
+    ) -> None:
+        """Type ``text`` into ``pane_id`` (``send-keys``).
+
+        ``literal`` skips tmux's key-name lookup (useful for ``C-c`` etc. when
+        the caller wants the literal characters; default is to interpret tmux
+        names so callers can send things like ``Enter`` or ``C-c``).
+        """
+        self._find_pane(pane_id)
+        argv: list[str] = ["send-keys", "-t", pane_id]
+        if literal:
+            argv.append("-l")
+        argv.append(text)
+        self._tmux_cli_run(argv)
+        if enter and not literal:
+            self._tmux_cli_run(["send-keys", "-t", pane_id, "Enter"])
+
+    def capture_pane(self, pane_id: str, *, lines: int = 200) -> str:
+        """Return the visible (or scrolled-back) text of a pane.
+
+        ``lines`` limits how many *trailing* lines to return; tmux reports
+        the whole history when ``-S - -E -`` is passed.
+        """
+        self._find_pane(pane_id)
+        cmd = self._tmux_cli_base() + ["capture-pane", "-pJ", "-t", pane_id, "-S", "-"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+        if r.returncode != 0:
+            msg = (r.stderr or r.stdout or "capture-pane failed").strip()
+            raise DmuxError(msg)
+        text = r.stdout or ""
+        if lines > 0:
+            kept = text.splitlines()[-lines:]
+            return "\n".join(kept)
+        return text
+
+    def rename_window(self, session_name: str, window_index: int, new_name: str) -> None:
+        if not new_name.strip():
+            raise DmuxError("window name must not be empty")
+        window = self._get_window(session_name, window_index)
+        try:
+            window.rename_window(new_name.strip())
+        except LibTmuxException as e:
+            raise DmuxError(str(e).strip() or "rename-window failed") from e
+
+    def move_window(self, session_name: str, window_index: int, *, direction: str) -> int:
+        """Swap a window with its left/right neighbour. Returns the new index."""
+        session = self.get_session(session_name)
+        windows = list(session.windows)
+        n = len(windows)
+        if window_index < 0 or window_index >= n:
+            raise WindowNotFoundError(f"{session_name}:{window_index}")
+        if direction not in {"left", "right"}:
+            raise DmuxError("direction must be 'left' or 'right'")
+        target = window_index - 1 if direction == "left" else window_index + 1
+        if target < 0 or target >= n:
+            return window_index
+        src = windows[window_index]
+        dst = windows[target]
+        # tmux swap-window swaps two windows in place.
+        src_id = _txt(src.window_id)
+        dst_id = _txt(dst.window_id)
+        if not src_id or not dst_id:
+            raise DmuxError("missing window ids; cannot swap")
+        self._tmux_cli_run(["swap-window", "-d", "-s", src_id, "-t", dst_id])
+        return target
+
+    def break_pane(self, pane_id: str) -> None:
+        """Move a pane into its own new window (``break-pane``)."""
+        self._find_pane(pane_id)
+        self._tmux_cli_run(["break-pane", "-d", "-s", pane_id])
+
+    def toggle_zoom(self, pane_id: str) -> None:
+        """Toggle the ``window-zoomed-flag`` for the pane's window."""
+        self._find_pane(pane_id)
+        self._tmux_cli_run(["resize-pane", "-Z", "-t", pane_id])
+
+    def swap_pane(self, pane_id: str, *, direction: str) -> None:
+        """Swap a pane with the previous/next pane in its window."""
+        if direction not in {"up", "down"}:
+            raise DmuxError("direction must be 'up' or 'down'")
+        self._find_pane(pane_id)
+        flag = "-U" if direction == "up" else "-D"
+        self._tmux_cli_run(["swap-pane", flag, "-t", pane_id])
+
+    def resize_pane(
+        self,
+        pane_id: str,
+        *,
+        delta_x: int = 0,
+        delta_y: int = 0,
+    ) -> None:
+        """Apply ``resize-pane`` with directional cell deltas.
+
+        Positive ``delta_x`` widens to the right, positive ``delta_y`` grows
+        downward. Each axis maps to one ``resize-pane`` invocation.
+        """
+        self._find_pane(pane_id)
+        if delta_x:
+            flag = "-R" if delta_x > 0 else "-L"
+            self._tmux_cli_run(["resize-pane", "-t", pane_id, flag, str(abs(delta_x))])
+        if delta_y:
+            flag = "-D" if delta_y > 0 else "-U"
+            self._tmux_cli_run(["resize-pane", "-t", pane_id, flag, str(abs(delta_y))])
+
+    def set_window_synchronize(
+        self,
+        session_name: str,
+        window_index: int,
+        *,
+        on: bool,
+    ) -> None:
+        window = self._get_window(session_name, window_index)
+        target = _txt(window.window_id, "")
+        if not target:
+            raise DmuxError("missing window id")
+        self._tmux_cli_run(
+            ["set-window-option", "-t", target, "synchronize-panes", "on" if on else "off"]
+        )
+
+    def kill_other_panes(self, pane_id: str) -> None:
+        """``kill-pane -a`` — kill all other panes in the window."""
+        self._find_pane(pane_id)
+        self._tmux_cli_run(["kill-pane", "-a", "-t", pane_id])
+
+    def server_info(self) -> dict[str, str | None]:
+        """Lightweight server fingerprint for the topbar / debugging panel."""
+        version = ""
+        try:
+            cmd = self._tmux_cli_base() + ["-V"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=4, check=False)
+            if r.returncode == 0:
+                version = (r.stdout or "").strip()
+        except (subprocess.TimeoutExpired, OSError):
+            version = ""
+        sessions = 0
+        clients = 0
+        try:
+            sessions = len(list(self.server().sessions))
+            cmd2 = self._tmux_cli_base() + ["list-clients", "-F", "#{client_name}"]
+            r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=4, check=False)
+            if r2.returncode == 0:
+                clients = len([s for s in (r2.stdout or "").splitlines() if s.strip()])
+        except (subprocess.TimeoutExpired, OSError, LibTmuxException):
+            pass
+        return {
+            "version": version,
+            "socket_path": self._socket_path,
+            "sessions": str(sessions),
+            "clients": str(clients),
+        }
