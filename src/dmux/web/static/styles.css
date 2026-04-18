@@ -584,6 +584,31 @@ body {
   background: rgba(11, 18, 32, 0.78);
 }
 
+/* When the top bar is crowded, scroll horizontally instead of clipping controls */
+.dmux-topbar-actions {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  justify-content: flex-end;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dmux-topbar-actions::-webkit-scrollbar {
+  height: 5px;
+}
+
+.dmux-topbar-actions::-webkit-scrollbar-thumb {
+  background: var(--dmux-border-strong);
+  border-radius: 999px;
+}
+
+#topbar-actions-main,
+#topbar-session-actions {
+  flex-shrink: 0;
+}
+
 .view-title {
   letter-spacing: -0.02em;
   color: var(--dmux-text);
@@ -1083,7 +1108,7 @@ body {
 .pane-mosaic--tmux .pane-tile {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 0;
+  min-height: 80px;
   overflow: auto;
   padding-right: 2.2rem;
 }
@@ -2547,6 +2572,104 @@ dialog.dmux-dialog--resize {
 
 dialog.dmux-dialog--capture {
   max-width: min(60rem, 100vw - 2rem);
+}
+
+/* Snapshot split-button + dropdown ----------------------------- */
+
+.dmux-snap-split {
+  position: relative;
+}
+
+.dmux-snap-toggle {
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+  border-left-color: transparent;
+}
+
+.dmux-snap-toggle:hover,
+.dmux-snap-toggle:focus-visible {
+  border-left-color: currentColor;
+}
+
+.dmux-snap-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 16rem;
+  z-index: 30;
+  padding: 0.35rem;
+  background: var(--bs-body-bg, #fff);
+  /* stack on top of topbar sticky */
+}
+
+[data-bs-theme="dark"] .dmux-snap-menu {
+  background: var(--dmux-surface-elevated, #1a2030);
+}
+
+.dmux-snap-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: none;
+  background: none;
+  color: var(--dmux-text);
+  border-radius: var(--dmux-radius-sm);
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+  line-height: 1.3;
+}
+
+.dmux-snap-menu-item:hover,
+.dmux-snap-menu-item:focus-visible {
+  background: var(--dmux-surface-soft);
+  outline: none;
+}
+
+.dmux-snap-menu-hint {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--dmux-text-faint);
+  margin-top: 0.1rem;
+}
+
+/* Snapshot restore dialog -------------------------------------- */
+
+dialog.dmux-dialog--snapshots {
+  max-width: min(36rem, 100vw - 2rem);
+}
+
+.dmux-dialog-head .btn-close {
+  opacity: 0.65;
+}
+
+.dmux-dialog-head .btn-close:hover {
+  opacity: 1;
+}
+
+.snapshot-restore-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.snapshot-restore-list {
+  max-height: min(52vh, 24rem);
+  background: var(--bs-body-bg);
+}
+
+.snapshot-restore-item:last-child {
+  border-bottom: 0 !important;
+}
+
+.snapshot-restore-meta {
+  font-family: var(--dmux-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
 }
 
 .send-keys-textarea {

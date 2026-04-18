@@ -98,12 +98,22 @@
           <div class="sidebar-section-label px-3 pt-2 pb-1">
             <span class="section-label">Tools</span>
           </div>
-          <div class="sidebar-tools d-grid gap-1 px-3 pb-2" role="tablist" aria-label="Switch view">
-            <button type="button" class="nav-jump active" id="nav-sessions" role="tab" aria-selected="true">
-              <i class="bi bi-window-stack me-2" aria-hidden="true"></i>Sessions
-            </button>
-            <button type="button" class="nav-jump" id="nav-plugins" role="tab" aria-selected="false">
-              <i class="bi bi-puzzle me-2" aria-hidden="true"></i>Plugins (TPM)
+          <div class="sidebar-tools d-grid gap-1 px-3 pb-2">
+            <div class="d-grid gap-1" role="tablist" aria-label="Switch view">
+              <button type="button" class="nav-jump active" id="nav-sessions" role="tab" aria-selected="true">
+                <i class="bi bi-window-stack me-2" aria-hidden="true"></i>Sessions
+              </button>
+              <button type="button" class="nav-jump" id="nav-plugins" role="tab" aria-selected="false">
+                <i class="bi bi-puzzle me-2" aria-hidden="true"></i>Plugins (TPM)
+              </button>
+            </div>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary text-start dmux-sidebar-restore mt-1"
+              id="btn-sidebar-restore-snapshot"
+              title="Restore from SQLite (same as top bar Restore)"
+            >
+              <i class="bi bi-cloud-arrow-up me-2" aria-hidden="true"></i>Restore snapshot…
             </button>
           </div>
 
@@ -117,7 +127,7 @@
 
         <div class="main-wrap col d-flex flex-column min-w-0 bg-dmux-canvas">
           <header class="topbar px-3 px-md-4 py-2">
-            <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 min-w-0">
               <div class="topbar-left min-w-0 flex-grow-1">
                 <div class="d-flex align-items-center gap-2 mb-1">
                   <h1 class="view-title h6 mb-0 fw-semibold text-truncate" id="view-title">Sessions</h1>
@@ -125,7 +135,7 @@
                 <p class="view-meta small text-secondary mb-0" id="view-meta">Loading…</p>
                 <p class="sync-line text-muted mb-0 mt-1 font-monospace" id="sync-meta" aria-live="polite"></p>
               </div>
-              <div class="topbar-actions d-flex flex-wrap align-items-center gap-2">
+              <div class="topbar-actions dmux-topbar-actions d-flex flex-nowrap align-items-center gap-2 min-w-0">
                 <span id="topbar-toggle-wrap">
                   <div class="form-check form-switch mb-0 dmux-switch">
                     <input class="form-check-input" type="checkbox" id="auto-refresh" checked title="Poll the API every 5 seconds" />
@@ -153,24 +163,48 @@
                   <i class="bi bi-sun-fill theme-icon-light" aria-hidden="true"></i>
                   <i class="bi bi-moon-stars-fill theme-icon-dark" aria-hidden="true"></i>
                 </button>
-                <div class="btn-toolbar flex-wrap gap-2" id="topbar-actions-main" role="toolbar">
+                <div class="btn-toolbar flex-nowrap gap-2 flex-shrink-0" id="topbar-actions-main" role="toolbar">
                   <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-refresh" aria-label="Refresh (r)">
                     <span class="btn-icon" aria-hidden="true"><i class="bi bi-arrow-clockwise"></i></span>
                     Refresh
                   </button>
-                  <span id="topbar-session-actions" class="d-inline-flex flex-wrap gap-2">
+                  <span id="topbar-session-actions" class="d-inline-flex flex-nowrap gap-2 flex-shrink-0">
                     <button type="button" class="btn btn-sm btn-primary" id="btn-new-session">
                       <span class="btn-icon" aria-hidden="true"><i class="bi bi-plus-lg"></i></span>
                       New session
                     </button>
-                    <button
-                      type="button"
-                      class="btn btn-sm btn-outline-primary"
-                      id="btn-save-snapshot"
-                      title="Persist layout to SQLite (same as dmux save)"
-                    >
-                      <i class="bi bi-cloud-arrow-down me-1" aria-hidden="true"></i>Save snapshot
-                    </button>
+                    <div class="dmux-snap-split btn-group flex-shrink-0" role="group" aria-label="Snapshot actions">
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-outline-primary"
+                        id="btn-save-snapshot"
+                        title="Persist layout to SQLite (same as dmux save)"
+                      >
+                        <i class="bi bi-cloud-arrow-down me-1" aria-hidden="true"></i>Snapshot
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-outline-primary dmux-snap-toggle"
+                        id="btn-snap-menu-toggle"
+                        aria-haspopup="true"
+                        aria-expanded="false"
+                        aria-label="More snapshot actions"
+                        title="Restore or browse snapshots"
+                      >
+                        <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                      </button>
+                    </div>
+                    <div class="dmux-snap-menu dmux-popover shadow border rounded-3 hidden" id="snap-menu" role="menu">
+                      <button type="button" class="dmux-snap-menu-item" id="btn-restore-snapshot" role="menuitem">
+                        <i class="bi bi-cloud-arrow-up me-2 text-primary" aria-hidden="true"></i>Restore snapshot…
+                        <span class="dmux-snap-menu-hint">Choose from saved layouts</span>
+                      </button>
+                      <div class="dmux-popover-divider"></div>
+                      <button type="button" class="dmux-snap-menu-item" id="btn-save-snapshot-menu" role="menuitem">
+                        <i class="bi bi-cloud-arrow-down me-2 text-primary" aria-hidden="true"></i>Save snapshot
+                        <span class="dmux-snap-menu-hint">Same as <code>dmux save</code></span>
+                      </button>
+                    </div>
                   </span>
                 </div>
               </div>
@@ -821,6 +855,41 @@
           <button type="submit" class="btn btn-sm btn-primary" id="rename-win-submit">Rename</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="dmux-dialog dmux-dialog--snapshots" id="modal-snapshots-restore" aria-labelledby="modal-snapshots-restore-title">
+      <div class="modal-form">
+        <div class="dmux-dialog-head d-flex align-items-start justify-content-between gap-2 mb-0">
+          <h2 class="dmux-dialog-title h6 mb-0 flex-grow-1 min-w-0" id="modal-snapshots-restore-title">
+            <i class="bi bi-cloud-arrow-up dmux-dialog-icon" aria-hidden="true"></i>Restore snapshot
+          </h2>
+          <button
+            type="button"
+            class="btn-close flex-shrink-0 mt-0"
+            id="modal-snapshots-restore-dismiss"
+            aria-label="Close"
+          ></button>
+        </div>
+        <p class="modal-lead small text-secondary mb-2">
+          Rebuilds sessions from the saved layout in SQLite (same as <code>dmux restore</code>). If session names already exist, turn on
+          <strong>Kill conflicting sessions</strong> first (<code>--kill</code>).
+        </p>
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="snapshot-restore-kill" autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-restore-kill">Kill conflicting sessions</label>
+        </div>
+        <p class="small fw-semibold mb-2 text-secondary" id="snapshot-restore-count" aria-live="polite"></p>
+        <div
+          class="snapshot-restore-list rounded-3 border overflow-auto mb-2 hidden"
+          id="snapshot-restore-list"
+          role="list"
+          aria-label="Saved snapshots"
+        ></div>
+        <p class="small text-secondary mb-0 hidden" id="snapshot-restore-empty"></p>
+        <div class="modal-actions d-flex flex-wrap justify-content-end gap-2 pt-3 border-top mt-2">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="modal-snapshots-restore-close">Close</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog class="dmux-dialog" id="modal-new" aria-labelledby="modal-title">

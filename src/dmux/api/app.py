@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import types
 from dataclasses import asdict
-from pathlib import Path
 
 from flask import Flask, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -15,31 +16,63 @@ from dmux.exceptions import (
     PluginManagerError,
     SessionExistsError,
     SessionNotFoundError,
+    SnapshotIdNotFoundError,
+    SnapshotNotFoundError,
     WindowNotFoundError,
 )
 from dmux.persistence.state_manager import StateManager
 from dmux.plugin_doc_defaults import tmux_option_lines_for_plugin
 from dmux.services import plugin_manager as tpm
 from dmux.services.github_plugin_help import github_plugin_help as plugin_github_help
+from dmux.paths import resolve_dmux_web_dir
 from dmux.services.tmux_service import LayoutKind, TmuxService
 
-_PKG = Path(__file__).resolve().parent.parent
+
+def _ui_allow_browser_cache() -> bool:
+    """When false, HTML/static are served without validators so edits show on normal refresh."""
+    return os.environ.get("DMUX_UI_ALLOW_CACHE", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def create_app(*, socket_path: str | None = None) -> Flask:
     tmux = TmuxService(socket_path=socket_path)
     state = StateManager()
 
+    web_dir = resolve_dmux_web_dir()
     app = Flask(
         __name__,
-        static_folder=str(_PKG / "web" / "static"),
-        template_folder=str(_PKG / "web" / "templates"),
+        static_folder=str(web_dir / "static"),
+        template_folder=str(web_dir / "templates"),
     )
+    app.config["DMUX_WEB_DIR"] = str(web_dir.resolve())
+    app.config["DMUX_UI_NO_CACHE"] = not _ui_allow_browser_cache()
+
+    # Avoid 304 + stale UI: Werkzeug conditional static responses ignore weak Cache-Control hints.
+    if app.config["DMUX_UI_NO_CACHE"] and app.static_folder:
+
+        def _send_static_no_cond(self: Flask, filename: str) -> ResponseReturnValue:
+            from flask.helpers import send_from_directory
+
+            return send_from_directory(
+                self.static_folder,
+                filename,
+                max_age=0,
+                conditional=False,
+            )
+
+        app.send_static_file = types.MethodType(_send_static_no_cond, app)
 
     @app.after_request
-    def _no_store_api(response: WsgiResponse) -> WsgiResponse:
-        if request.path.startswith("/api/"):
+    def _cache_policy(response: WsgiResponse) -> WsgiResponse:
+        path = request.path or ""
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+            return response
+        if app.config.get("DMUX_UI_NO_CACHE") and (path == "/" or path.startswith("/static/")):
+            response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, must-revalidate, private"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            for h in ("ETag", "Last-Modified"):
+                response.headers.pop(h, None)
         return response
 
     @app.get("/api/health")
@@ -417,6 +450,48 @@ def create_app(*, socket_path: str | None = None) -> Flask:
     @app.get("/api/v1/snapshots")
     def list_snapshots() -> ResponseReturnValue:
         return jsonify({"snapshots": state.list_snapshots()}), 200
+
+    @app.delete("/api/v1/snapshots/<int:snapshot_id>")
+    def delete_snapshot_row(snapshot_id: int) -> ResponseReturnValue:
+        if not state.delete_snapshot(snapshot_id):
+            return jsonify({"error": str(SnapshotIdNotFoundError(snapshot_id))}), 404
+        return jsonify({"ok": True}), 200
+
+    @app.post("/api/v1/snapshots/restore")
+    def restore_snapshot() -> ResponseReturnValue:
+        data = request.get_json(silent=True) or {}
+        kill_existing = bool(data.get("kill_existing", False))
+        raw_id = data.get("id")
+        raw_label = data.get("label")
+
+        if raw_id is not None and raw_id != "":
+            try:
+                sid = int(raw_id)
+            except (TypeError, ValueError):
+                return jsonify({"error": "invalid snapshot id"}), 400
+            try:
+                snap = state.load_by_id(sid)
+            except SnapshotIdNotFoundError as e:
+                return jsonify({"error": str(e)}), 404
+        elif raw_label is not None:
+            label = str(raw_label).strip()
+            if not label:
+                return jsonify({"error": "label must be non-empty"}), 400
+            try:
+                snap = state.load_latest(label)
+            except SnapshotNotFoundError as e:
+                return jsonify({"error": str(e)}), 404
+        else:
+            return jsonify({"error": "Provide snapshot id or label"}), 400
+
+        try:
+            tmux.restore_snapshot(snap, kill_existing=kill_existing)
+            tmux.refresh()
+            return jsonify({"ok": True}), 200
+        except SessionExistsError as e:
+            return jsonify({"error": str(e)}), 409
+        except DmuxError as e:
+            return jsonify({"error": str(e)}), 400
 
     @app.get("/api/v1/plugins")
     def plugins_status() -> ResponseReturnValue:

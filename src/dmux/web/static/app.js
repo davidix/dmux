@@ -1,5 +1,5 @@
 /**
- * dmux web UI — sessions, windows, pane focus, layouts, snapshot save.
+ * dmux web UI — sessions, windows, pane focus, layouts, snapshot save/restore.
  */
 
 const LAYOUTS = [
@@ -111,6 +111,7 @@ function setConnectionStatus(ok) {
     label.textContent = ok ? "Live" : "Offline";
   }
   if (block) {
+    block.classList.toggle("hidden", Boolean(ok));
     block.setAttribute("aria-label", ok ? "Connected to API" : "Cannot reach API");
   }
 }
@@ -1033,14 +1034,210 @@ async function postPaneTmuxStyle(paneId, { foreground, background }) {
 }
 
 async function saveSnapshot(label) {
-  const res = await fetch("/api/v1/snapshots/save", {
+  const res = await fetch(apiUrl("/api/v1/snapshots/save"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ label: label || "default" }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+async function fetchSnapshotsList() {
+  const res = await fetch(apiUrl("/api/v1/snapshots"), {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return Array.isArray(data.snapshots) ? data.snapshots : [];
+}
+
+/** @param {{ id?: number, label?: string, kill_existing?: boolean }} body */
+async function postSnapshotRestore(body) {
+  const res = await fetch(apiUrl("/api/v1/snapshots/restore"), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+/** @param {number | string} snapshotId */
+async function deleteSnapshotById(snapshotId) {
+  const res = await fetch(apiUrl(`/api/v1/snapshots/${encodeURIComponent(String(snapshotId))}`), {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function refreshSnapshotRestoreListInModal() {
+  const snapshots = await fetchSnapshotsList();
+  renderSnapshotRestoreList(snapshots);
+}
+
+/** @param {number} ts */
+function formatSnapshotTime(ts) {
+  if (typeof ts !== "number" || Number.isNaN(ts)) return "—";
+  try {
+    return new Date(ts * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return String(ts);
+  }
+}
+
+/** @param {Record<string, unknown>} s */
+function snapshotSummaryLine(s) {
+  const summary = s.summary && typeof s.summary === "object" ? s.summary : {};
+  if (summary.parse_error) return "Could not read snapshot payload.";
+  const sc = Number(summary.session_count) || 0;
+  const wc = Number(summary.window_count) || 0;
+  const pc = Number(summary.pane_count) || 0;
+  const names = Array.isArray(summary.session_names) ? summary.session_names : [];
+  const head = names.slice(0, 5).filter((x) => x && String(x).trim());
+  const more = names.length > 5 ? "…" : "";
+  const tail = head.length ? ` — ${head.join(", ")}${more}` : "";
+  return `${sc} session${sc === 1 ? "" : "s"} · ${wc} window${wc === 1 ? "" : "s"} · ${pc} pane${pc === 1 ? "" : "s"}${tail}`;
+}
+
+/** @param {Record<string, unknown>[]} snapshots */
+function renderSnapshotRestoreList(snapshots) {
+  const list = el("snapshot-restore-list");
+  const empty = el("snapshot-restore-empty");
+  const countEl = el("snapshot-restore-count");
+  if (!list || !empty || !countEl) return;
+  list.innerHTML = "";
+  const n = snapshots.length;
+  countEl.textContent = n === 0 ? "0 snapshots on disk" : `${n} snapshot${n === 1 ? "" : "s"} on disk`;
+  empty.classList.toggle("hidden", n > 0);
+  list.classList.toggle("hidden", n === 0);
+  for (const raw of snapshots) {
+    const s = raw && typeof raw === "object" ? raw : {};
+    const id = s.id;
+    const row = document.createElement("div");
+    row.className =
+      "snapshot-restore-item border-bottom d-flex flex-column flex-md-row gap-2 gap-md-3 align-items-start align-items-md-center justify-content-between p-2 p-md-3";
+    row.setAttribute("role", "listitem");
+    const left = document.createElement("div");
+    left.className = "min-w-0 flex-grow-1";
+    const title = document.createElement("div");
+    title.className = "small fw-semibold d-flex flex-wrap align-items-center gap-2";
+    const idSpan = document.createElement("span");
+    idSpan.className = "snapshot-restore-meta text-secondary";
+    idSpan.textContent = `#${id}`;
+    title.appendChild(idSpan);
+    const auto = Boolean(s.is_auto);
+    if (auto) {
+      const badge = document.createElement("span");
+      badge.className = "badge rounded-pill text-bg-secondary";
+      badge.textContent = "autosave";
+      title.appendChild(badge);
+    }
+    const label = document.createElement("span");
+    label.className = "text-truncate";
+    label.textContent = String(s.label ?? "");
+    title.appendChild(label);
+    const when = document.createElement("div");
+    when.className = "snapshot-restore-meta text-secondary mt-1";
+    when.textContent = formatSnapshotTime(Number(s.created_unix));
+    const detail = document.createElement("p");
+    detail.className = "small text-secondary mb-0 mt-1";
+    detail.textContent = snapshotSummaryLine(s);
+    left.appendChild(title);
+    left.appendChild(when);
+    left.appendChild(detail);
+    const actions = document.createElement("div");
+    actions.className = "snapshot-restore-actions flex-shrink-0";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-sm btn-primary snapshot-restore-restore-btn";
+    btn.textContent = "Restore";
+    btn.addEventListener("click", async () => {
+      const kill = Boolean(el("snapshot-restore-kill")?.checked);
+      const restoreBtns = list.querySelectorAll(".snapshot-restore-restore-btn");
+      const delBtns = list.querySelectorAll(".snapshot-restore-delete-btn");
+      restoreBtns.forEach((b) => {
+        b.disabled = true;
+      });
+      delBtns.forEach((b) => {
+        b.disabled = true;
+      });
+      try {
+        await postSnapshotRestore({ id, kill_existing: kill });
+        toast("Snapshot restored");
+        el("modal-snapshots-restore")?.close();
+        await refresh({ silent: true });
+      } catch (e) {
+        toast(String(e.message || e), "err");
+      } finally {
+        restoreBtns.forEach((b) => {
+          b.disabled = false;
+        });
+        delBtns.forEach((b) => {
+          b.disabled = false;
+        });
+      }
+    });
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn btn-sm btn-outline-danger snapshot-restore-delete-btn";
+    delBtn.title = "Delete this snapshot from SQLite";
+    delBtn.setAttribute("aria-label", `Delete snapshot ${id}`);
+    delBtn.innerHTML = '<i class="bi bi-trash" aria-hidden="true"></i>';
+    delBtn.addEventListener("click", async () => {
+      if (!window.confirm(`Delete snapshot #${id} from the database? This cannot be undone.`)) return;
+      delBtn.disabled = true;
+      btn.disabled = true;
+      try {
+        await deleteSnapshotById(id);
+        toast(`Snapshot #${id} deleted`);
+        await refreshSnapshotRestoreListInModal();
+      } catch (e) {
+        toast(String(e.message || e), "err");
+      } finally {
+        delBtn.disabled = false;
+        btn.disabled = false;
+      }
+    });
+    actions.appendChild(btn);
+    actions.appendChild(delBtn);
+    row.appendChild(left);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+const SNAPSHOT_RESTORE_EMPTY_DEFAULT =
+  "No snapshots yet. Use Save snapshot or run dmux save in a terminal.";
+
+async function openSnapshotsRestoreModal() {
+  const modal = el("modal-snapshots-restore");
+  if (!modal) return;
+  const emptyMsg = el("snapshot-restore-empty");
+  if (emptyMsg) emptyMsg.textContent = SNAPSHOT_RESTORE_EMPTY_DEFAULT;
+  const list = el("snapshot-restore-list");
+  if (list) list.innerHTML = "";
+  const countEl = el("snapshot-restore-count");
+  if (countEl) countEl.textContent = "Loading…";
+  modal.showModal();
+  try {
+    const snapshots = await fetchSnapshotsList();
+    renderSnapshotRestoreList(snapshots);
+  } catch (e) {
+    if (countEl) countEl.textContent = "Could not load snapshots";
+    emptyMsg?.classList.remove("hidden");
+    if (emptyMsg) emptyMsg.textContent = `${String(e.message || e)}`;
+    el("snapshot-restore-list")?.classList.add("hidden");
+    toast(String(e.message || e), "err");
+  }
 }
 
 const PANE_TILE_STYLE_KEY = "dmuxPaneTileStyles";
@@ -2482,6 +2679,82 @@ el("btn-save-snapshot").addEventListener("click", async () => {
     toast(String(e.message || e), "err");
   } finally {
     btn.disabled = false;
+  }
+});
+
+function bindOpenSnapshotsRestoreModal(btn) {
+  btn?.addEventListener("click", () => {
+    closeSnapMenu();
+    openSnapshotsRestoreModal();
+  });
+}
+bindOpenSnapshotsRestoreModal(el("btn-restore-snapshot"));
+bindOpenSnapshotsRestoreModal(el("btn-sidebar-restore-snapshot"));
+
+el("modal-snapshots-restore-close")?.addEventListener("click", () => {
+  el("modal-snapshots-restore")?.close();
+});
+
+el("modal-snapshots-restore-dismiss")?.addEventListener("click", () => {
+  el("modal-snapshots-restore")?.close();
+});
+
+// ---------- snapshot split-button dropdown ----------
+
+function closeSnapMenu() {
+  const menu = el("snap-menu");
+  const toggle = el("btn-snap-menu-toggle");
+  menu?.classList.add("hidden");
+  toggle?.setAttribute("aria-expanded", "false");
+}
+
+function openSnapMenu() {
+  const menu = el("snap-menu");
+  const toggle = el("btn-snap-menu-toggle");
+  menu?.classList.remove("hidden");
+  toggle?.setAttribute("aria-expanded", "true");
+  el("btn-restore-snapshot")?.focus();
+}
+
+el("btn-snap-menu-toggle")?.addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const menu = el("snap-menu");
+  if (menu?.classList.contains("hidden")) {
+    openSnapMenu();
+  } else {
+    closeSnapMenu();
+  }
+});
+
+// Save via the dropdown item (duplicates the main btn-save-snapshot)
+el("btn-save-snapshot-menu")?.addEventListener("click", async () => {
+  closeSnapMenu();
+  const btn = el("btn-save-snapshot");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await saveSnapshot("default");
+    toast(`Snapshot saved (#${r.id})`);
+  } catch (e) {
+    toast(String(e.message || e), "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
+
+// Close dropdown when clicking outside
+document.addEventListener("click", (ev) => {
+  if (!el("snap-menu")?.classList.contains("hidden")) {
+    if (!ev.target?.closest?.(".dmux-snap-split") && !ev.target?.closest?.("#snap-menu")) {
+      closeSnapMenu();
+    }
+  }
+});
+
+// Keyboard: Escape closes the dropdown
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !el("snap-menu")?.classList.contains("hidden")) {
+    closeSnapMenu();
+    el("btn-snap-menu-toggle")?.focus();
   }
 });
 

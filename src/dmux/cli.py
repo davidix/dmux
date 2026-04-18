@@ -514,6 +514,14 @@ def cmd_ui(
     ] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", "-p")] = 8756,
     socket: Annotated[str | None, typer.Option("--socket", "-S")] = None,
+    web_root: Annotated[
+        str | None,
+        typer.Option(
+            "--web-root",
+            envvar="DMUX_WEB_ROOT",
+            help="Load HTML/JS/CSS from this tree (git repo root or …/src/dmux), not only the installed package",
+        ),
+    ] = None,
     open_browser: Annotated[
         bool,
         typer.Option("--open", help="Open the UI in your default browser"),
@@ -527,11 +535,23 @@ def cmd_ui(
     ] = True,
 ) -> None:
     """Run the dmux web UI + API (keeps running until Ctrl+C)."""
+    import os
     import webbrowser
 
     from dmux.api.app import create_app
 
     _ensure_web_assets()
+    if web_root and str(web_root).strip():
+        os.environ["DMUX_WEB_ROOT"] = str(web_root).strip()
+    if reload:
+        if os.environ.get("DMUX_UI_ALLOW_CACHE", "").strip().lower() in ("1", "true", "yes", "on"):
+            typer.secho(
+                "Ignoring DMUX_UI_ALLOW_CACHE while --reload is on (UI is always fetched fresh).",
+                fg=typer.colors.YELLOW,
+            )
+        os.environ.pop("DMUX_UI_ALLOW_CACHE", None)
+    else:
+        os.environ.setdefault("DMUX_UI_ALLOW_CACHE", "1")
     web_app = create_app(socket_path=socket)
     if reload:
         web_app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -539,10 +559,12 @@ def cmd_ui(
         web_app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     url = f"http://{host}:{port}/"
     typer.echo(f"dmux UI → {url}")
+    typer.echo(f"UI files: {web_app.config.get('DMUX_WEB_DIR', '?')}")
     if reload:
         typer.secho(
-            "Hot reload on (Python restarts; refresh browser for JS/CSS). "
-            "Use --no-reload for a stable long-running server.",
+            "Hot reload on (Python restarts on code changes). "
+            "UI HTML/JS/CSS are not cached — a normal browser refresh loads the latest files. "
+            "Use --no-reload to allow browser caching (DMUX_UI_ALLOW_CACHE=1).",
             fg=typer.colors.CYAN,
         )
     typer.echo("Leave this terminal open. Press Ctrl+C to stop the server.")

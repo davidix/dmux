@@ -1,8 +1,41 @@
 import json
+from pathlib import Path
 
 from dmux import ssl_fetch
 from dmux.api.app import create_app
+from dmux.paths import dmux_package_dir, resolve_dmux_web_dir
+from dmux.persistence.state_manager import StateManager
+from dmux.schemas import Snapshot, SnapshotPane, SnapshotSession, SnapshotWindow
 from dmux.services import plugin_manager as pm
+
+
+def test_resolve_dmux_web_dir_accepts_repo_root_layout(tmp_path, monkeypatch) -> None:
+    """DMUX_WEB_ROOT can point at a checkout root (…/repo) with src/dmux/web/…"""
+    fake_pkg = tmp_path / "src" / "dmux"
+    (fake_pkg / "web" / "templates").mkdir(parents=True)
+    (fake_pkg / "web" / "templates" / "index.html").write_text("<html/>", encoding="utf-8")
+    monkeypatch.setenv("DMUX_WEB_ROOT", str(tmp_path))
+    assert resolve_dmux_web_dir() == fake_pkg / "web"
+
+
+def test_resolve_dmux_web_dir_falls_back_when_invalid(monkeypatch) -> None:
+    monkeypatch.setenv("DMUX_WEB_ROOT", "/this/path/does/not/exist/ever")
+    assert resolve_dmux_web_dir() == dmux_package_dir() / "web"
+
+
+def test_ui_static_is_not_served_as_304_with_if_none_match(monkeypatch: object) -> None:
+    """Browsers were reusing stale JS/CSS because Flask sent 304 when If-None-Match matched."""
+    monkeypatch.delenv("DMUX_UI_ALLOW_CACHE", raising=False)
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r1 = c.get("/static/styles.css")
+    assert r1.status_code == 200
+    assert "no-store" in (r1.headers.get("Cache-Control") or "")
+    fake_etag = '"bogus-etag-for-test"'
+    r2 = c.get("/static/styles.css", headers={"If-None-Match": fake_etag})
+    assert r2.status_code == 200
+    assert r2.headers.get("ETag") is None
 
 
 def test_health() -> None:
@@ -666,3 +699,111 @@ def test_plugin_install_url_for_third_party_spec() -> None:
     main, branch = pm._split_plugin_branch(spec)  # type: ignore[attr-defined]
     assert main == spec and branch is None
     assert pm._plugin_dir_name(spec) == "tmux"  # type: ignore[attr-defined]
+
+
+def _minimal_snapshot(label: str = "default") -> Snapshot:
+    return Snapshot(
+        label=label,
+        created_unix=1700000000.0,
+        sessions=(
+            SnapshotSession(
+                name="alpha",
+                windows=(
+                    SnapshotWindow(
+                        0,
+                        "shell",
+                        None,
+                        True,
+                        (SnapshotPane(0, "/tmp", 80, 24, True), SnapshotPane(1, "/var", 80, 24, False)),
+                    ),
+                ),
+            ),
+            SnapshotSession(
+                name="beta",
+                windows=(SnapshotWindow(0, "logs", "tiled", True, (SnapshotPane(0, "/", 80, 24, True),)),),
+            ),
+        ),
+    )
+
+
+def test_state_manager_list_snapshots_includes_summary(tmp_path: Path) -> None:
+    db = tmp_path / "snap.db"
+    sm = StateManager(db_path=db)
+    sid = sm.save_snapshot(_minimal_snapshot(), is_auto=False)
+    rows = sm.list_snapshots()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == sid
+    assert row["label"] == "default"
+    assert row["is_auto"] == 0
+    summary = row["summary"]
+    assert summary["session_count"] == 2
+    assert summary["window_count"] == 2
+    assert summary["pane_count"] == 3
+    assert summary["session_names"] == ["alpha", "beta"]
+
+
+def test_state_manager_load_by_id(tmp_path: Path) -> None:
+    from dmux.exceptions import SnapshotIdNotFoundError
+
+    db = tmp_path / "snap2.db"
+    sm = StateManager(db_path=db)
+    sid = sm.save_snapshot(_minimal_snapshot(), is_auto=False)
+    loaded = sm.load_by_id(sid)
+    assert loaded.label == "default"
+    assert tuple(s.name for s in loaded.sessions) == ("alpha", "beta")
+    try:
+        sm.load_by_id(99999)
+    except SnapshotIdNotFoundError as e:
+        assert e.snapshot_id == 99999
+    else:
+        raise AssertionError("expected SnapshotIdNotFoundError")
+
+
+def test_snapshots_api_list_and_restore(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr("dmux.paths.data_home", lambda: tmp_path)
+    snap = _minimal_snapshot()
+    sid = StateManager().save_snapshot(snap, is_auto=True)
+
+    restored: list[object] = []
+
+    def fake_restore(self: object, s: object, *, kill_existing: bool = False) -> None:
+        restored.append((tuple(x.name for x in s.sessions), kill_existing))  # type: ignore[attr-defined]
+
+    monkeypatch.setattr("dmux.api.app.TmuxService.restore_snapshot", fake_restore)
+
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r = c.get("/api/v1/snapshots")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert len(body["snapshots"]) >= 1
+    hit = next(x for x in body["snapshots"] if x["id"] == sid)
+    assert hit["summary"]["pane_count"] == 3
+    assert hit["summary"]["session_names"] == ["alpha", "beta"]
+
+    r2 = c.post(
+        "/api/v1/snapshots/restore",
+        data=json.dumps({"id": sid, "kill_existing": True}),
+        content_type="application/json",
+    )
+    assert r2.status_code == 200
+    assert r2.get_json() == {"ok": True}
+    assert restored == [(("alpha", "beta"), True)]
+
+    r3 = c.post("/api/v1/snapshots/restore", data=json.dumps({}), content_type="application/json")
+    assert r3.status_code == 400
+
+    r4 = c.post(
+        "/api/v1/snapshots/restore",
+        data=json.dumps({"id": 999999999}),
+        content_type="application/json",
+    )
+    assert r4.status_code == 404
+
+    r5 = c.delete(f"/api/v1/snapshots/{sid}")
+    assert r5.status_code == 200
+    assert r5.get_json() == {"ok": True}
+    r6 = c.delete(f"/api/v1/snapshots/{sid}")
+    assert r6.status_code == 404

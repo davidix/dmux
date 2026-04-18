@@ -28,6 +28,14 @@ class SnapshotNotFoundError(DmuxError):
         super().__init__(f"No snapshot found for label: {label}")
 
 
+class SnapshotIdNotFoundError(DmuxError):
+    """No saved snapshot row for the given id."""
+
+    def __init__(self, snapshot_id: int) -> None:
+        super().__init__(f"No snapshot with id: {snapshot_id}")
+        self.snapshot_id = snapshot_id
+
+
 class SessionExistsError(DmuxError):
     """Session name already in use."""
 
