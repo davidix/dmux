@@ -767,8 +767,24 @@ def test_snapshots_api_list_and_restore(monkeypatch: object, tmp_path: Path) -> 
 
     restored: list[object] = []
 
-    def fake_restore(self: object, s: object, *, kill_existing: bool = False) -> None:
-        restored.append((tuple(x.name for x in s.sessions), kill_existing))  # type: ignore[attr-defined]
+    def fake_restore(
+        self: object,
+        s: object,
+        *,
+        kill_existing: bool = False,
+        replay_scrollback: bool = False,
+        relaunch_commands: bool = False,
+        use_resurrect: bool = False,
+    ) -> None:
+        restored.append(  # type: ignore[attr-defined]
+            (
+                tuple(x.name for x in s.sessions),
+                kill_existing,
+                replay_scrollback,
+                relaunch_commands,
+                use_resurrect,
+            )
+        )
 
     monkeypatch.setattr("dmux.api.app.TmuxService.restore_snapshot", fake_restore)
 
@@ -790,7 +806,7 @@ def test_snapshots_api_list_and_restore(monkeypatch: object, tmp_path: Path) -> 
     )
     assert r2.status_code == 200
     assert r2.get_json() == {"ok": True}
-    assert restored == [(("alpha", "beta"), True)]
+    assert restored == [(("alpha", "beta"), True, False, False, False)]
 
     r3 = c.post("/api/v1/snapshots/restore", data=json.dumps({}), content_type="application/json")
     assert r3.status_code == 400
@@ -807,3 +823,353 @@ def test_snapshots_api_list_and_restore(monkeypatch: object, tmp_path: Path) -> 
     assert r5.get_json() == {"ok": True}
     r6 = c.delete(f"/api/v1/snapshots/{sid}")
     assert r6.status_code == 404
+
+
+def test_snapshot_pane_rich_round_trip() -> None:
+    """v2 fields (command, history, scrollback, …) survive JSON round-trip."""
+    from dmux.persistence.serialize import snapshot_from_json, snapshot_to_json
+
+    rich_pane = SnapshotPane(
+        index=0,
+        cwd="/srv",
+        width=120,
+        height=40,
+        active=True,
+        command="vim",
+        cmdline=("vim", "src/app.py"),
+        pid=4242,
+        title="editor",
+        style_fg="#cccccc",
+        style_bg="#202020",
+        scrollback="$ ls\nfile.txt\n$ vim src/app.py\n",
+        history=("ls", "vim src/app.py"),
+    )
+    snap = Snapshot(
+        label="rich",
+        created_unix=1700000001.0,
+        sessions=(
+            SnapshotSession(
+                name="dev",
+                windows=(
+                    SnapshotWindow(
+                        0,
+                        "code",
+                        None,
+                        True,
+                        (rich_pane,),
+                        options={"synchronize-panes": "off", "remain-on-exit": "on"},
+                    ),
+                ),
+            ),
+        ),
+        meta={"version": 2, "include_scrollback": True, "include_history": True},
+    )
+    raw = snapshot_to_json(snap)
+    back = snapshot_from_json(raw)
+    win = back.sessions[0].windows[0]
+    pane = win.panes[0]
+    assert pane.command == "vim"
+    assert pane.cmdline == ("vim", "src/app.py")
+    assert pane.pid == 4242
+    assert pane.title == "editor"
+    assert pane.style_fg == "#cccccc"
+    assert pane.history == ("ls", "vim src/app.py")
+    assert "vim src/app.py" in pane.scrollback
+    assert win.options == {"synchronize-panes": "off", "remain-on-exit": "on"}
+
+
+def test_snapshot_v1_payload_loads_with_defaults() -> None:
+    """Old payloads (no command/title/options) still load — fields default empty."""
+    from dmux.persistence.serialize import snapshot_from_json
+
+    v1 = (
+        '{"label":"old","created_unix":1700000000.0,"meta":{"version":1},'
+        '"sessions":[{"name":"a","windows":[{"index":0,"name":"w","layout_name":null,'
+        '"active":true,"panes":[{"index":0,"cwd":"/","width":80,"height":24,"active":true}]}]}]}'
+    )
+    snap = snapshot_from_json(v1)
+    pane = snap.sessions[0].windows[0].panes[0]
+    assert pane.command == ""
+    assert pane.history == ()
+    assert pane.scrollback == ""
+    assert snap.sessions[0].windows[0].options == {}
+
+
+def test_extract_command_lines_heuristic() -> None:
+    from dmux.services.tmux_service import _extract_command_lines
+
+    text = (
+        "user@host /tmp $ ls\n"
+        "file.txt\n"
+        "user@host /tmp $ vim app.py\n"
+        "user@host /tmp % git status\n"
+        "On branch main\n"
+    )
+    lines = _extract_command_lines(text)
+    assert lines == ["ls", "vim app.py", "git status"]
+
+
+def test_state_manager_summary_marks_rich_state(tmp_path: Path) -> None:
+    db = tmp_path / "rich.db"
+    sm = StateManager(db_path=db)
+    rich_pane = SnapshotPane(
+        index=0, cwd="/", width=80, height=24, active=True,
+        command="htop", scrollback="line1\nline2\n", history=("htop",),
+    )
+    snap = Snapshot(
+        label="rich",
+        created_unix=1700000002.0,
+        sessions=(
+            SnapshotSession(
+                name="x",
+                windows=(SnapshotWindow(0, "w", None, True, (rich_pane,)),),
+            ),
+        ),
+        meta={"version": 2},
+    )
+    sm.save_snapshot(snap, is_auto=False)
+    rows = sm.list_snapshots()
+    summary = rows[0]["summary"]
+    assert summary["has_commands"] is True
+    assert summary["has_scrollback"] is True
+    assert summary["has_history"] is True
+    assert summary["history_lines"] == 1
+    assert summary["scrollback_chars"] >= len("line1\nline2\n")
+    assert summary["version"] == 2
+
+
+def test_save_api_passes_rich_capture_options(monkeypatch: object) -> None:
+    """POST /api/v1/snapshots/save propagates capture flags to the service."""
+    captured: dict[str, object] = {}
+
+    def fake_capture(self: object, label: str = "default", **kwargs: object) -> Snapshot:
+        captured["label"] = label
+        captured.update(kwargs)
+        return _minimal_snapshot(label)
+
+    monkeypatch.setattr("dmux.api.app.TmuxService.capture_snapshot", fake_capture)
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r = c.post(
+        "/api/v1/snapshots/save",
+        data=json.dumps({
+            "label": "rich",
+            "include_scrollback": True,
+            "include_history": True,
+            "scrollback_lines": 500,
+            "history_lines": 50,
+        }),
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.get_json()
+    body = r.get_json()
+    assert body["label"] == "rich"
+    assert body["include_scrollback"] is True
+    assert body["include_history"] is True
+    assert captured == {
+        "label": "rich",
+        "include_scrollback": True,
+        "include_history": True,
+        "scrollback_lines": 500,
+        "history_lines": 50,
+        "use_resurrect": False,
+    }
+
+
+def test_save_api_clamps_scrollback_lines(monkeypatch: object) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_capture(self: object, label: str = "default", **kwargs: object) -> Snapshot:
+        captured.update(kwargs)
+        return _minimal_snapshot(label)
+
+    monkeypatch.setattr("dmux.api.app.TmuxService.capture_snapshot", fake_capture)
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r = c.post(
+        "/api/v1/snapshots/save",
+        data=json.dumps({
+            "include_scrollback": True,
+            "scrollback_lines": 10**9,
+            "history_lines": -42,
+        }),
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.get_json()
+    assert captured["scrollback_lines"] == 20000
+    assert captured["history_lines"] == 0
+
+
+def test_restore_api_propagates_replay_options(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr("dmux.paths.data_home", lambda: tmp_path)
+    sid = StateManager().save_snapshot(_minimal_snapshot(), is_auto=False)
+    seen: list[dict[str, object]] = []
+
+    def fake_restore(self: object, s: object, **kwargs: object) -> None:
+        seen.append(dict(kwargs))
+
+    monkeypatch.setattr("dmux.api.app.TmuxService.restore_snapshot", fake_restore)
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r = c.post(
+        "/api/v1/snapshots/restore",
+        data=json.dumps({
+            "id": sid,
+            "kill_existing": False,
+            "replay_scrollback": True,
+            "relaunch_commands": True,
+        }),
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.get_json()
+    assert seen == [{
+        "kill_existing": False,
+        "replay_scrollback": True,
+        "relaunch_commands": True,
+        "use_resurrect": False,
+    }]
+
+
+# ---------------------------------------------------------------------------
+# tmux-resurrect integration
+# ---------------------------------------------------------------------------
+
+
+def test_resurrect_service_handles_missing_install(monkeypatch: object, tmp_path: Path) -> None:
+    """When the plugin clone is absent, the service reports unavailable + raises on save."""
+    from dmux.services import resurrect
+
+    monkeypatch.setattr(
+        "dmux.services.resurrect.tpm_plugins_root", lambda: tmp_path / "plugins"
+    )
+    assert resurrect.is_installed() is False
+    try:
+        resurrect.save(socket_path=None)
+    except resurrect.ResurrectError:
+        pass
+    else:
+        raise AssertionError("expected ResurrectError when plugin missing")
+
+
+def test_resurrect_save_dir_falls_back_to_legacy(monkeypatch: object, tmp_path: Path) -> None:
+    """If the new XDG dir is missing but the legacy ~/.tmux/resurrect/ exists, prefer it."""
+    from dmux.services import resurrect
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        "dmux.services.resurrect._resurrect_dir_option", lambda _socket: None
+    )
+    legacy = tmp_path / ".tmux" / "resurrect"
+    legacy.mkdir(parents=True)
+    assert resurrect.save_dir(None) == legacy
+
+
+def test_resurrect_status_payload_has_expected_keys(monkeypatch: object, tmp_path: Path) -> None:
+    from dmux.services import resurrect
+
+    monkeypatch.setattr(
+        "dmux.services.resurrect.tpm_plugins_root", lambda: tmp_path / "plugins"
+    )
+    monkeypatch.setattr(
+        "dmux.services.resurrect.list_configured_plugins", lambda: []
+    )
+    monkeypatch.setattr(
+        "dmux.services.resurrect._resurrect_dir_option",
+        lambda _socket: str(tmp_path / "saves"),
+    )
+    s = resurrect.status(None)
+    assert s["spec"] == "tmux-plugins/tmux-resurrect"
+    assert s["installed"] is False
+    assert s["configured"] is False
+    assert s["save_count"] == 0
+    assert s["latest_save_path"] is None
+
+
+def test_save_api_use_resurrect_invokes_service(monkeypatch: object, tmp_path: Path) -> None:
+    """`use_resurrect=True` calls capture_snapshot with the right kwarg, which calls resurrect.save()."""
+    monkeypatch.setattr("dmux.paths.data_home", lambda: tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_capture(self: object, label: str = "default", **kwargs: object) -> Snapshot:
+        captured.update(kwargs)
+        captured["label"] = label
+        snap = _minimal_snapshot()
+        if kwargs.get("use_resurrect"):
+            snap = Snapshot(
+                label=snap.label,
+                created_unix=snap.created_unix,
+                sessions=snap.sessions,
+                meta={**dict(snap.meta), "resurrect_file": "/tmp/tmux_resurrect_x.txt"},
+            )
+        return snap
+
+    monkeypatch.setattr("dmux.api.app.TmuxService.capture_snapshot", fake_capture)
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r = c.post(
+        "/api/v1/snapshots/save",
+        data=json.dumps({"label": "rich", "use_resurrect": True}),
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.get_json()
+    body = r.get_json()
+    assert body["use_resurrect"] is True
+    assert body["resurrect_file"] == "/tmp/tmux_resurrect_x.txt"
+    assert captured["use_resurrect"] is True
+
+
+def test_state_manager_summary_marks_resurrect(tmp_path: Path) -> None:
+    """A snapshot whose meta carries `resurrect_file` shows `has_resurrect=True` in the summary."""
+    from dmux.persistence.state_manager import _snapshot_payload_summary
+
+    payload = json.dumps(
+        {
+            "label": "rich",
+            "created_unix": 0,
+            "sessions": [],
+            "meta": {
+                "version": 2,
+                "resurrect_file": "/some/where/tmux_resurrect_20260418T120000.txt",
+            },
+        }
+    )
+    summary = _snapshot_payload_summary(payload)
+    assert summary["has_resurrect"] is True
+    assert summary["resurrect_file"].endswith(".txt")
+
+
+def test_resurrect_status_endpoint(monkeypatch: object, tmp_path: Path) -> None:
+    monkeypatch.setattr("dmux.paths.data_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "dmux.services.resurrect.tpm_plugins_root", lambda: tmp_path / "plugins"
+    )
+    monkeypatch.setattr(
+        "dmux.services.resurrect.list_configured_plugins", lambda: []
+    )
+    monkeypatch.setattr(
+        "dmux.services.resurrect._resurrect_dir_option",
+        lambda _socket: str(tmp_path / "saves"),
+    )
+    app = create_app()
+    app.testing = True
+    c = app.test_client()
+    r = c.get("/api/v1/snapshots/resurrect")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["spec"] == "tmux-plugins/tmux-resurrect"
+    assert "installed" in body and "configured" in body
+    assert "save_dir" in body
+
+
+def test_default_seed_includes_resurrect_unless_opt_out(
+    monkeypatch: object, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("DMUX_NO_DEFAULT_PLUGINS", raising=False)
+    assert "tmux-plugins/tmux-resurrect" in pm._default_seed_plugins()
+    monkeypatch.setenv("DMUX_NO_DEFAULT_PLUGINS", "1")
+    assert pm._default_seed_plugins() == []

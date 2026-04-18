@@ -9,7 +9,6 @@
 A modern command center for tmux. Manage sessions and panes from a typed CLI, persist them to SQLite, configure TPM plugins (and the Freed-Wu status bar) from a wizard in your browser — all without leaving your terminal flow.
 
 [![PyPI](https://img.shields.io/pypi/v/dmux.svg?logo=pypi&logoColor=white)](https://pypi.org/project/dmux/)
-[![Downloads](https://static.pepy.tech/badge/dmux/month)](https://pepy.tech/project/dmux)
 [![Python](https://img.shields.io/pypi/pyversions/dmux.svg?logo=python&logoColor=white)](https://pypi.org/project/dmux/)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-1BB91F?logo=tmux&logoColor=white)](https://github.com/tmux/tmux)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)

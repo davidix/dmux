@@ -12,15 +12,22 @@
   },
   "tmux-plugins/tmux-resurrect": {
     "lines": [
-      "# Persist tmux state across restarts. Docs: https://github.com/tmux-plugins/tmux-resurrect",
-      "set -g @resurrect-capture-pane-contents 'on'"
+      "# tmux-resurrect — persist FULL tmux state across restarts. Docs: https://github.com/tmux-plugins/tmux-resurrect",
+      "# dmux uses these scripts directly when you save/restore a snapshot with `Use tmux-resurrect` enabled.",
+      "set -g @resurrect-capture-pane-contents 'on'",
+      "set -g @resurrect-save-shell-history 'on'",
+      "set -g @resurrect-strategy-vim 'session'",
+      "set -g @resurrect-strategy-nvim 'session'",
+      "# Restore long-running TUIs by name. Prefix with ~ to match anywhere in the cmdline.",
+      "set -g @resurrect-processes 'ssh psql mysql sqlite3 ~vim ~nvim ~emacs ~man ~less ~more ~tail ~top ~htop ~btop ~watch ~irssi ~weechat ~mutt ~ranger ~mc ~lazygit ~k9s ~tig ~ncmpcpp'"
     ]
   },
   "tmux-plugins/tmux-continuum": {
     "lines": [
-      "# Auto-save + restore tmux state (pairs with tmux-resurrect). Docs: https://github.com/tmux-plugins/tmux-continuum",
+      "# tmux-continuum — periodic auto-save + auto-restore on server start (pairs with tmux-resurrect).",
+      "# Docs: https://github.com/tmux-plugins/tmux-continuum",
       "set -g @continuum-restore 'on'",
-      "set -g @continuum-save-interval '60'"
+      "set -g @continuum-save-interval '15'"
     ]
   },
   "tmux-plugins/tmux-sidebar": {

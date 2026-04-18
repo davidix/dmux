@@ -441,11 +441,54 @@ def create_app(*, socket_path: str | None = None) -> Flask:
 
     @app.post("/api/v1/snapshots/save")
     def save_snapshot() -> ResponseReturnValue:
+        """Persist current tmux topology (and optional rich pane state) to SQLite.
+
+        Body (all optional):
+            ``label``: snapshot label (default ``"default"``).
+            ``include_scrollback``: keep up to ``scrollback_lines`` of pane text.
+            ``scrollback_lines``: cap on saved scrollback (default 2000, max 20000).
+            ``include_history``: extract command-looking lines from scrollback.
+            ``history_lines``: cap on extracted commands per pane (default 200).
+            ``use_resurrect``: also call tmux-plugins/tmux-resurrect's
+                ``scripts/save.sh`` and remember the resulting file path in
+                snapshot metadata; lets a later restore re-create per-pane
+                processes, vim/neovim sessions, and pane contents.
+        """
         data = request.get_json(silent=True) or {}
         label = str(data.get("label", "default"))
-        snap = tmux.capture_snapshot(label=label)
+
+        def _bound_int(key: str, default: int, lo: int, hi: int) -> int:
+            try:
+                v = int(data.get(key, default))
+            except (TypeError, ValueError):
+                v = default
+            return max(lo, min(hi, v))
+
+        include_scrollback = bool(data.get("include_scrollback", False))
+        include_history = bool(data.get("include_history", False))
+        scrollback_lines = _bound_int("scrollback_lines", 2000, 0, 20000)
+        history_lines = _bound_int("history_lines", 200, 0, 5000)
+        use_resurrect = bool(data.get("use_resurrect", False))
+        try:
+            snap = tmux.capture_snapshot(
+                label=label,
+                include_scrollback=include_scrollback,
+                scrollback_lines=scrollback_lines,
+                include_history=include_history,
+                history_lines=history_lines,
+                use_resurrect=use_resurrect,
+            )
+        except DmuxError as e:
+            return jsonify({"error": str(e)}), 400
         sid = state.save_snapshot(snap, is_auto=False)
-        return jsonify({"id": sid, "label": label}), 200
+        return jsonify({
+            "id": sid,
+            "label": label,
+            "include_scrollback": include_scrollback,
+            "include_history": include_history,
+            "use_resurrect": use_resurrect,
+            "resurrect_file": snap.meta.get("resurrect_file"),
+        }), 200
 
     @app.get("/api/v1/snapshots")
     def list_snapshots() -> ResponseReturnValue:
@@ -461,6 +504,9 @@ def create_app(*, socket_path: str | None = None) -> Flask:
     def restore_snapshot() -> ResponseReturnValue:
         data = request.get_json(silent=True) or {}
         kill_existing = bool(data.get("kill_existing", False))
+        replay_scrollback = bool(data.get("replay_scrollback", False))
+        relaunch_commands = bool(data.get("relaunch_commands", False))
+        use_resurrect = bool(data.get("use_resurrect", False))
         raw_id = data.get("id")
         raw_label = data.get("label")
 
@@ -485,13 +531,30 @@ def create_app(*, socket_path: str | None = None) -> Flask:
             return jsonify({"error": "Provide snapshot id or label"}), 400
 
         try:
-            tmux.restore_snapshot(snap, kill_existing=kill_existing)
+            tmux.restore_snapshot(
+                snap,
+                kill_existing=kill_existing,
+                replay_scrollback=replay_scrollback,
+                relaunch_commands=relaunch_commands,
+                use_resurrect=use_resurrect,
+            )
             tmux.refresh()
             return jsonify({"ok": True}), 200
         except SessionExistsError as e:
             return jsonify({"error": str(e)}), 409
         except DmuxError as e:
+            app.logger.warning("snapshot restore failed: %s", e, exc_info=True)
             return jsonify({"error": str(e)}), 400
+        except Exception as e:  # noqa: BLE001 — surface unknown errors to the UI / log
+            app.logger.exception("snapshot restore crashed")
+            return jsonify({"error": f"unexpected error: {e}"}), 500
+
+    @app.get("/api/v1/snapshots/resurrect")
+    def snapshots_resurrect_status() -> ResponseReturnValue:
+        """Live tmux-resurrect status: configured / installed / save dir / file count."""
+        from dmux.services import resurrect as _resurrect
+
+        return jsonify(_resurrect.status(socket_path=socket_path)), 200
 
     @app.get("/api/v1/plugins")
     def plugins_status() -> ResponseReturnValue:

@@ -15,7 +15,12 @@ from dmux.schemas import Snapshot
 
 
 def _snapshot_payload_summary(payload: str) -> dict[str, Any]:
-    """Lightweight counts from stored JSON (no full Snapshot validation)."""
+    """Lightweight counts + rich-state flags from stored JSON.
+
+    Surfaces ``has_scrollback`` / ``has_history`` / ``has_commands`` and
+    cumulative ``history_lines`` / ``scrollback_chars`` so the UI can render
+    badges without re-parsing each pane.
+    """
     try:
         d = json.loads(payload)
     except json.JSONDecodeError:
@@ -25,12 +30,25 @@ def _snapshot_payload_summary(payload: str) -> dict[str, Any]:
             "pane_count": 0,
             "session_names": [],
             "parse_error": True,
+            "has_scrollback": False,
+            "has_history": False,
+            "has_commands": False,
+            "history_lines": 0,
+            "scrollback_chars": 0,
+            "version": 1,
+            "has_resurrect": False,
+            "resurrect_file": None,
         }
     raw_sessions = d.get("sessions")
     sessions = raw_sessions if isinstance(raw_sessions, list) else []
     names: list[str] = []
     window_count = 0
     pane_count = 0
+    has_scrollback = False
+    has_history = False
+    has_commands = False
+    history_lines = 0
+    scrollback_chars = 0
     for s in sessions:
         if not isinstance(s, dict):
             continue
@@ -43,13 +61,48 @@ def _snapshot_payload_summary(payload: str) -> dict[str, Any]:
             if not isinstance(w, dict):
                 continue
             panes = w.get("panes")
-            if isinstance(panes, list):
-                pane_count += len(panes)
+            if not isinstance(panes, list):
+                continue
+            pane_count += len(panes)
+            for p in panes:
+                if not isinstance(p, dict):
+                    continue
+                cmd = p.get("command")
+                if isinstance(cmd, str) and cmd:
+                    has_commands = True
+                sb = p.get("scrollback")
+                if isinstance(sb, str) and sb:
+                    has_scrollback = True
+                    scrollback_chars += len(sb)
+                hist = p.get("history")
+                if isinstance(hist, list) and hist:
+                    has_history = True
+                    history_lines += len(hist)
+    meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+    version = meta.get("version", 1)
+    try:
+        version = int(version)
+    except (TypeError, ValueError):
+        version = 1
+    resurrect_file_raw = meta.get("resurrect_file") if isinstance(meta, dict) else None
+    resurrect_file = (
+        str(resurrect_file_raw).strip()
+        if isinstance(resurrect_file_raw, str) and resurrect_file_raw.strip()
+        else None
+    )
     return {
         "session_count": len([s for s in sessions if isinstance(s, dict)]),
         "window_count": window_count,
         "pane_count": pane_count,
         "session_names": names,
+        "has_scrollback": has_scrollback,
+        "has_history": has_history,
+        "has_commands": has_commands,
+        "history_lines": history_lines,
+        "scrollback_chars": scrollback_chars,
+        "version": version,
+        "has_resurrect": resurrect_file is not None,
+        "resurrect_file": resurrect_file,
     }
 
 

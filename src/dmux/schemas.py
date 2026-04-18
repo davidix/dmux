@@ -51,6 +51,15 @@ class SnapshotPane:
     width: int
     height: int
     active: bool
+    # Rich state (all optional; default empty for backwards compat with v1 payloads).
+    command: str = ""  # tmux #{pane_current_command} (e.g. "vim", "zsh")
+    cmdline: tuple[str, ...] = ()  # ps -o args= for the foreground pid (full argv)
+    pid: int = 0  # tmux #{pane_pid}
+    title: str = ""  # tmux #{pane_title}
+    style_fg: str = ""  # foreground colour (best-effort, may be empty)
+    style_bg: str = ""  # background colour (best-effort, may be empty)
+    scrollback: str = ""  # raw visible text (newest at the bottom; opt-in)
+    history: tuple[str, ...] = ()  # heuristically-extracted command lines (opt-in)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +69,7 @@ class SnapshotWindow:
     layout_name: str | None
     active: bool
     panes: tuple[SnapshotPane, ...]
+    options: dict[str, str] = field(default_factory=dict)  # window-scoped tmux options
 
 
 @dataclass(frozen=True, slots=True)

@@ -1033,11 +1033,27 @@ async function postPaneTmuxStyle(paneId, { foreground, background }) {
   return data;
 }
 
-async function saveSnapshot(label) {
+/**
+ * @param {string|null|undefined} label
+ * @param {{ include_scrollback?: boolean, include_history?: boolean,
+ *           scrollback_lines?: number, history_lines?: number }} [opts]
+ */
+async function saveSnapshot(label, opts) {
+  /** @type {Record<string, unknown>} */
+  const body = { label: label || "default" };
+  if (opts && typeof opts === "object") {
+    if (opts.include_scrollback) body.include_scrollback = true;
+    if (opts.include_history) body.include_history = true;
+    if (Number.isFinite(opts.scrollback_lines))
+      body.scrollback_lines = Math.max(0, Math.min(20000, Math.floor(Number(opts.scrollback_lines))));
+    if (Number.isFinite(opts.history_lines))
+      body.history_lines = Math.max(0, Math.min(5000, Math.floor(Number(opts.history_lines))));
+    if (opts.use_resurrect) body.use_resurrect = true;
+  }
   const res = await fetch(apiUrl("/api/v1/snapshots/save"), {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ label: label || "default" }),
+    body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -1108,6 +1124,51 @@ function snapshotSummaryLine(s) {
   return `${sc} session${sc === 1 ? "" : "s"} · ${wc} window${wc === 1 ? "" : "s"} · ${pc} pane${pc === 1 ? "" : "s"}${tail}`;
 }
 
+/**
+ * Append "rich state" badges (commands / scrollback / history) to a row title.
+ * Reads `summary.has_commands`, `summary.has_scrollback`, `summary.has_history`,
+ * `summary.history_lines`, `summary.scrollback_chars` from the API payload.
+ * @param {HTMLElement} title
+ * @param {Record<string, unknown>} s
+ */
+function appendSnapshotBadges(title, s) {
+  const summary = (s && typeof s === "object" && s.summary && typeof s.summary === "object")
+    ? /** @type {Record<string, unknown>} */ (s.summary)
+    : {};
+  const version = Number(summary.version) || 1;
+  const mk = (text, cls, tooltip) => {
+    const b = document.createElement("span");
+    b.className = `badge rounded-pill ${cls}`;
+    b.textContent = text;
+    if (tooltip) b.title = tooltip;
+    return b;
+  };
+  if (version >= 2) {
+    title.appendChild(mk("v2", "text-bg-light border", "Snapshot schema v2 (rich pane state supported)"));
+  }
+  if (summary.has_commands) {
+    title.appendChild(mk("commands", "text-bg-info-subtle text-info-emphasis border", "Pane foreground commands captured"));
+  }
+  if (summary.has_scrollback) {
+    const kb = Math.max(1, Math.round(Number(summary.scrollback_chars || 0) / 1024));
+    title.appendChild(mk(`scrollback · ${kb}KB`, "text-bg-warning-subtle text-warning-emphasis border", "Pane scrollback captured (replayable on restore)"));
+  }
+  if (summary.has_history) {
+    const n = Number(summary.history_lines || 0);
+    title.appendChild(mk(`history · ${n}`, "text-bg-success-subtle text-success-emphasis border", "Extracted command history captured"));
+  }
+  if (summary.has_resurrect) {
+    const file = summary.resurrect_file ? String(summary.resurrect_file) : "tmux-resurrect file";
+    title.appendChild(
+      mk(
+        "resurrect",
+        "text-bg-primary-subtle text-primary-emphasis border",
+        `tmux-resurrect snapshot recorded — ${file}`,
+      ),
+    );
+  }
+}
+
 /** @param {Record<string, unknown>[]} snapshots */
 function renderSnapshotRestoreList(snapshots) {
   const list = el("snapshot-restore-list");
@@ -1145,6 +1206,7 @@ function renderSnapshotRestoreList(snapshots) {
     label.className = "text-truncate";
     label.textContent = String(s.label ?? "");
     title.appendChild(label);
+    appendSnapshotBadges(title, s);
     const when = document.createElement("div");
     when.className = "snapshot-restore-meta text-secondary mt-1";
     when.textContent = formatSnapshotTime(Number(s.created_unix));
@@ -1162,6 +1224,9 @@ function renderSnapshotRestoreList(snapshots) {
     btn.textContent = "Restore";
     btn.addEventListener("click", async () => {
       const kill = Boolean(el("snapshot-restore-kill")?.checked);
+      const replay = Boolean(el("snapshot-restore-replay")?.checked);
+      const relaunch = Boolean(el("snapshot-restore-relaunch")?.checked);
+      const useResurrect = Boolean(el("snapshot-restore-use-resurrect")?.checked);
       const restoreBtns = list.querySelectorAll(".snapshot-restore-restore-btn");
       const delBtns = list.querySelectorAll(".snapshot-restore-delete-btn");
       restoreBtns.forEach((b) => {
@@ -1171,7 +1236,13 @@ function renderSnapshotRestoreList(snapshots) {
         b.disabled = true;
       });
       try {
-        await postSnapshotRestore({ id, kill_existing: kill });
+        await postSnapshotRestore({
+          id,
+          kill_existing: kill,
+          replay_scrollback: replay,
+          relaunch_commands: relaunch,
+          use_resurrect: useResurrect,
+        });
         toast("Snapshot restored");
         el("modal-snapshots-restore")?.close();
         await refresh({ silent: true });
@@ -1228,6 +1299,9 @@ async function openSnapshotsRestoreModal() {
   const countEl = el("snapshot-restore-count");
   if (countEl) countEl.textContent = "Loading…";
   modal.showModal();
+  syncResurrectControl("snapshot-restore-use-resurrect", null, {
+    defaultCheckedWhenInstalled: false,
+  });
   try {
     const snapshots = await fetchSnapshotsList();
     renderSnapshotRestoreList(snapshots);
@@ -2689,7 +2763,6 @@ function bindOpenSnapshotsRestoreModal(btn) {
   });
 }
 bindOpenSnapshotsRestoreModal(el("btn-restore-snapshot"));
-bindOpenSnapshotsRestoreModal(el("btn-sidebar-restore-snapshot"));
 
 el("modal-snapshots-restore-close")?.addEventListener("click", () => {
   el("modal-snapshots-restore")?.close();
@@ -2738,6 +2811,107 @@ el("btn-save-snapshot-menu")?.addEventListener("click", async () => {
     toast(String(e.message || e), "err");
   } finally {
     if (btn) btn.disabled = false;
+  }
+});
+
+// ---------- rich snapshot dialog ----------
+
+async function fetchResurrectStatus() {
+  try {
+    const res = await fetch(apiUrl("/api/v1/snapshots/resurrect"), {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function syncResurrectControl(checkboxId, hintId, options = {}) {
+  const cb = /** @type {HTMLInputElement|null} */ (el(checkboxId));
+  const hint = el(hintId);
+  if (!cb) return null;
+  const status = await fetchResurrectStatus();
+  if (!status) return null;
+  const installed = Boolean(status.installed);
+  const configured = Boolean(status.configured);
+  cb.disabled = !installed;
+  if (options.defaultCheckedWhenInstalled && installed) cb.checked = true;
+  if (!installed) cb.checked = false;
+  if (hint) {
+    let msg = "";
+    if (!configured) {
+      msg = "Plugin not in plugins.tmux — open Plugins → Add to enable this.";
+    } else if (!installed) {
+      msg = "Listed in plugins.tmux but not installed yet — open Plugins → Install.";
+    } else {
+      const where = status.save_dir ? ` Saves to ${status.save_dir}.` : "";
+      msg = `tmux-resurrect installed.${where}`;
+    }
+    hint.textContent = msg;
+    hint.classList.toggle("hidden", !msg);
+  }
+  return status;
+}
+
+async function openSnapshotSaveRichModal() {
+  closeSnapMenu();
+  const modal = el("modal-snapshot-save-rich");
+  if (!modal) return;
+  const labelInput = /** @type {HTMLInputElement|null} */ (el("snapshot-save-label-input"));
+  if (labelInput && !labelInput.value.trim()) labelInput.value = "default";
+  modal.showModal();
+  setTimeout(() => labelInput?.focus(), 0);
+  syncResurrectControl("snapshot-save-use-resurrect", "snapshot-save-resurrect-hint", {
+    defaultCheckedWhenInstalled: true,
+  });
+}
+
+el("btn-save-snapshot-rich")?.addEventListener("click", openSnapshotSaveRichModal);
+el("modal-snapshot-save-rich-dismiss")?.addEventListener("click", () => {
+  el("modal-snapshot-save-rich")?.close();
+});
+el("modal-snapshot-save-rich-cancel")?.addEventListener("click", () => {
+  el("modal-snapshot-save-rich")?.close();
+});
+
+el("form-snapshot-save-rich")?.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const submit = /** @type {HTMLButtonElement|null} */ (el("modal-snapshot-save-rich-submit"));
+  const labelInput = /** @type {HTMLInputElement|null} */ (el("snapshot-save-label-input"));
+  const sbCheck = /** @type {HTMLInputElement|null} */ (el("snapshot-save-include-scrollback"));
+  const histCheck = /** @type {HTMLInputElement|null} */ (el("snapshot-save-include-history"));
+  const sbLines = /** @type {HTMLInputElement|null} */ (el("snapshot-save-scrollback-lines"));
+  const histLines = /** @type {HTMLInputElement|null} */ (el("snapshot-save-history-lines"));
+  const resurrectCheck = /** @type {HTMLInputElement|null} */ (el("snapshot-save-use-resurrect"));
+  const label = (labelInput?.value || "default").trim() || "default";
+  const include_scrollback = Boolean(sbCheck?.checked);
+  const include_history = Boolean(histCheck?.checked);
+  const scrollback_lines = Number.parseInt(sbLines?.value || "2000", 10);
+  const history_lines = Number.parseInt(histLines?.value || "200", 10);
+  const use_resurrect = Boolean(resurrectCheck?.checked && !resurrectCheck.disabled);
+  if (submit) submit.disabled = true;
+  try {
+    const r = await saveSnapshot(label, {
+      include_scrollback,
+      include_history,
+      scrollback_lines,
+      history_lines,
+      use_resurrect,
+    });
+    const tags = [];
+    if (r.include_scrollback) tags.push("scrollback");
+    if (r.include_history) tags.push("history");
+    if (r.use_resurrect) tags.push("resurrect");
+    const suffix = tags.length ? ` — ${tags.join(" + ")}` : "";
+    toast(`Snapshot saved (#${r.id})${suffix}`);
+    el("modal-snapshot-save-rich")?.close();
+  } catch (e) {
+    toast(String(e.message || e), "err");
+  } finally {
+    if (submit) submit.disabled = false;
   }
 });
 

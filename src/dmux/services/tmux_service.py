@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 import libtmux
 from libtmux import Pane, Server, Session, Window
@@ -50,6 +51,47 @@ _LAYOUT_MAP: dict[str, str] = {
     "main-horizontal": "main-horizontal",
     "main-vertical": "main-vertical",
 }
+
+# Common shell prompt suffixes. ``capture-pane -p`` records prompt + typed
+# command on the same physical row, so we look for the rightmost suffix on a
+# line and treat whatever follows as the command. Misses true multi-line
+# input (zsh secondary `> ` continuation) but handles the 95% case.
+_PROMPT_SUFFIXES: tuple[str, ...] = ("$ ", "% ", "# ", "› ", "❯ ", "» ", "➜ ")
+_MAX_HISTORY_LINE_LEN: int = 1000
+
+
+def _extract_command_lines(scrollback: str) -> list[str]:
+    """Best-effort: return lines that look like commands typed at a prompt.
+
+    Strategy: for each line, locate the rightmost prompt suffix; whatever
+    follows is the candidate command. Drops empty candidates, things that are
+    obviously not commands (longer than ``_MAX_HISTORY_LINE_LEN`` chars or
+    starting with non-printable junk), and exact duplicates of the immediately
+    preceding entry.
+    """
+    out: list[str] = []
+    for raw in scrollback.splitlines():
+        line = raw.rstrip("\r")
+        if not line.strip():
+            continue
+        idx = -1
+        for suffix in _PROMPT_SUFFIXES:
+            j = line.rfind(suffix)
+            if j > idx:
+                idx = j + len(suffix) - 1  # position of trailing space
+        if idx < 0:
+            continue
+        cand = line[idx + 1:].strip()
+        if not cand:
+            continue
+        if len(cand) > _MAX_HISTORY_LINE_LEN:
+            continue
+        if not cand[0].isprintable():
+            continue
+        if out and out[-1] == cand:
+            continue
+        out.append(cand)
+    return out
 
 
 class TmuxService:
@@ -240,8 +282,74 @@ class TmuxService:
                 return
         raise DmuxError("No attached tmux session found for this client.")
 
-    def capture_snapshot(self, label: str = "default") -> Snapshot:
+    # ------------------------------------------------------------------
+    # Snapshot capture
+    # ------------------------------------------------------------------
+
+    # Window options worth restoring (kept narrow on purpose so we don't write back
+    # noise like `window-active-style` which is per-pane and pushed via select-pane).
+    _SNAPSHOTTED_WINDOW_OPTIONS: tuple[str, ...] = (
+        "synchronize-panes",
+        "remain-on-exit",
+        "main-pane-height",
+        "main-pane-width",
+        "automatic-rename",
+        "allow-rename",
+    )
+
+    # Shells we never re-launch; their presence means the pane is "idle at a prompt".
+    _SHELL_BINARIES: frozenset[str] = frozenset({
+        "bash", "-bash", "zsh", "-zsh", "fish", "-fish", "sh", "-sh", "dash", "ksh",
+        "tcsh", "csh", "nu", "xonsh", "elvish", "ash",
+    })
+
+    def capture_snapshot(
+        self,
+        label: str = "default",
+        *,
+        include_scrollback: bool = False,
+        scrollback_lines: int = 2000,
+        include_history: bool = False,
+        history_lines: int = 200,
+        use_resurrect: bool = False,
+    ) -> Snapshot:
+        """Capture the current tmux topology with optional rich pane state.
+
+        Always captured per-pane (cheap, derived from the existing format strings):
+            ``command``, ``cmdline`` (via ``ps``), ``pid``, ``title``, ``style_fg/bg``.
+        Always captured per-window: a small whitelist of options
+            (``synchronize-panes``, ``remain-on-exit``, ``main-pane-*``, …).
+
+        Opt-in:
+            ``include_scrollback`` stores up to ``scrollback_lines`` lines of
+            ``capture-pane -peJ`` output (raw text, newest at the bottom).
+            ``include_history`` keeps up to ``history_lines`` lines that look like
+            commands (heuristic: a line that follows a prompt-ish suffix on the
+            previous line). Useful for "what was I doing" reminders on restore.
+            ``use_resurrect`` shells out to ``tmux-plugins/tmux-resurrect``'s
+            ``scripts/save.sh`` (via ``tmux run-shell``) so the snapshot also
+            captures per-pane processes, vim/neovim sessions, and (with the
+            plugin's options) shell history. The resulting file path is
+            stored in ``meta["resurrect_file"]`` so a later restore can
+            point ``last`` at the correct file.
+        """
         import time
+
+        # Trigger resurrect FIRST so its capture sees the user's tmux state
+        # exactly as it was before we start any read-side queries.
+        resurrect_file: str | None = None
+        if use_resurrect:
+            from dmux.services import resurrect as _resurrect
+
+            try:
+                resurrect_file = str(
+                    _resurrect.save(socket_path=self._socket_path).resolve()
+                )
+            except _resurrect.ResurrectError as e:
+                # Bubble up — the caller asked for "save everything" and we
+                # couldn't deliver. Better to fail loudly than to write a
+                # snapshot that silently drops the rich payload.
+                raise DmuxError(str(e)) from e
 
         sessions_out: list[SnapshotSession] = []
         for session in self.server().sessions:
@@ -250,12 +358,14 @@ class TmuxService:
                 panes: list[SnapshotPane] = []
                 for pi, pane in enumerate(window.panes):
                     panes.append(
-                        SnapshotPane(
-                            index=pi,
-                            cwd=_txt(pane.pane_current_path, "."),
-                            width=_dim(pane.pane_width),
-                            height=_dim(pane.pane_height),
-                            active=(pane == window.active_pane),
+                        self._snapshot_pane(
+                            pi,
+                            pane,
+                            window,
+                            include_scrollback=include_scrollback,
+                            scrollback_lines=scrollback_lines,
+                            include_history=include_history,
+                            history_lines=history_lines,
                         )
                     )
                 wins.append(
@@ -265,19 +375,211 @@ class TmuxService:
                         layout_name=window.window_layout,
                         active=(window == session.active_window),
                         panes=tuple(panes),
+                        options=self._snapshot_window_options(window),
                     )
                 )
             sessions_out.append(
                 SnapshotSession(name=_txt(session.session_name, "session"), windows=tuple(wins))
             )
+        meta: dict[str, Any] = {
+            "version": 2,
+            "include_scrollback": bool(include_scrollback),
+            "include_history": bool(include_history),
+        }
+        if resurrect_file:
+            meta["resurrect_file"] = resurrect_file
+            meta["use_resurrect"] = True
         return Snapshot(
             label=label,
             created_unix=time.time(),
             sessions=tuple(sessions_out),
-            meta={"version": 1},
+            meta=meta,
         )
 
-    def restore_snapshot(self, snapshot: Snapshot, *, kill_existing: bool = False) -> None:
+    def _snapshot_pane(
+        self,
+        pi: int,
+        pane: Pane,
+        window: Window,
+        *,
+        include_scrollback: bool,
+        scrollback_lines: int,
+        include_history: bool,
+        history_lines: int,
+    ) -> SnapshotPane:
+        pid_raw = getattr(pane, "pane_pid", None)
+        try:
+            pid = int(str(pid_raw)) if pid_raw is not None else 0
+        except (TypeError, ValueError):
+            pid = 0
+        cmdline: tuple[str, ...] = self._ps_cmdline(pid) if pid else ()
+        fg, bg = self._read_pane_style(pane)
+
+        scroll_text = ""
+        history: tuple[str, ...] = ()
+        if include_scrollback or include_history:
+            scroll_text = self._capture_pane_text(
+                _txt(pane.pane_id, ""), max_lines=max(scrollback_lines, history_lines, 0)
+            )
+        if include_history and scroll_text:
+            history = tuple(_extract_command_lines(scroll_text)[-max(history_lines, 0):])
+        if not include_scrollback:
+            scroll_text = ""
+        elif scrollback_lines > 0 and scroll_text:
+            scroll_text = "\n".join(scroll_text.splitlines()[-scrollback_lines:])
+
+        return SnapshotPane(
+            index=pi,
+            cwd=_txt(pane.pane_current_path, "."),
+            width=_dim(pane.pane_width),
+            height=_dim(pane.pane_height),
+            active=(pane == window.active_pane),
+            command=_txt(getattr(pane, "pane_current_command", ""), ""),
+            cmdline=cmdline,
+            pid=pid,
+            title=_txt(pane.pane_title, ""),
+            style_fg=fg,
+            style_bg=bg,
+            scrollback=scroll_text,
+            history=history,
+        )
+
+    def _snapshot_window_options(self, window: Window) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for opt in self._SNAPSHOTTED_WINDOW_OPTIONS:
+            v = self._show_window_option_safe(window, opt)
+            if v:
+                out[opt] = v
+        return out
+
+    def _ps_cmdline(self, pid: int) -> tuple[str, ...]:
+        if pid <= 0:
+            return ()
+        try:
+            r = subprocess.run(
+                ["ps", "-o", "args=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ()
+        if r.returncode != 0:
+            return ()
+        line = (r.stdout or "").strip().splitlines()
+        if not line:
+            return ()
+        # Best-effort tokenisation; quoted args lose their quotes (intentional —
+        # we only use this for display + opt-in re-launch where shells re-quote).
+        return tuple(line[0].split())
+
+    def _read_pane_style(self, pane: Pane) -> tuple[str, str]:
+        """Best-effort read of pane fg/bg via ``show-options -p`` ``window-active-style``.
+
+        Returns ``("", "")`` when the option is unset; restoring then leaves the
+        pane on the global default. Format mirrors ``set_pane_style``'s tokens
+        (``fg=… ,bg=…``).
+        """
+        target = _txt(pane.pane_id, "")
+        if not target:
+            return ("", "")
+        try:
+            cmd = self._tmux_cli_base() + [
+                "show-options", "-p", "-vt", target, "window-active-style",
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=4, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return ("", "")
+        if r.returncode != 0:
+            return ("", "")
+        raw = (r.stdout or "").strip()
+        if not raw or raw == "default":
+            return ("", "")
+        fg = bg = ""
+        for token in (t.strip() for t in raw.split(",")):
+            if token.startswith("fg="):
+                v = token[3:].strip()
+                fg = "" if v == "default" else v
+            elif token.startswith("bg="):
+                v = token[3:].strip()
+                bg = "" if v == "default" else v
+        return (fg, bg)
+
+    def _capture_pane_text(self, pane_id: str, *, max_lines: int) -> str:
+        """``capture-pane -peJ`` with ``-S -<n>`` start; safe to call on missing panes."""
+        if not pane_id:
+            return ""
+        n = max(int(max_lines or 0), 0)
+        argv = ["capture-pane", "-peJ", "-t", pane_id, "-p"]
+        if n > 0:
+            argv.extend(["-S", f"-{n}"])
+        else:
+            argv.extend(["-S", "-"])
+        try:
+            r = subprocess.run(
+                self._tmux_cli_base() + argv,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if r.returncode != 0:
+            return ""
+        return r.stdout or ""
+
+    def restore_snapshot(
+        self,
+        snapshot: Snapshot,
+        *,
+        kill_existing: bool = False,
+        replay_scrollback: bool = False,
+        relaunch_commands: bool = False,
+        use_resurrect: bool = False,
+    ) -> None:
+        """Re-create sessions/windows/panes from ``snapshot``.
+
+        ``replay_scrollback`` injects each pane's saved scrollback as a
+        ``cat <<'__DMUX__'`` heredoc so the user sees the prior context above
+        their fresh prompt. ``relaunch_commands`` re-runs the captured
+        foreground cmdline (skipped for shells; see ``_SHELL_BINARIES``).
+
+        ``use_resurrect`` short-circuits the structural rebuild: we point the
+        plugin's ``last`` symlink at the snapshot's
+        ``meta["resurrect_file"]`` (when present) and run
+        ``scripts/restore.sh``, which re-creates sessions/windows/panes,
+        re-launches captured processes, and (with options) restores pane
+        contents and shell history. Falls back to the structural restore
+        when no resurrect file is recorded.
+        """
+        if use_resurrect and snapshot.meta.get("resurrect_file"):
+            from dmux.services import resurrect as _resurrect
+
+            resurrect_path = Path(str(snapshot.meta["resurrect_file"]))
+            # Only fail loudly on resurrect-specific failures the user can act on
+            # (missing plugin, missing file). Falling back to structural restore
+            # would silently lose the per-pane processes / pane contents the user
+            # explicitly asked for, which is worse than a clear error message.
+            if not _resurrect.is_installed():
+                raise DmuxError(
+                    "Restore requested via tmux-resurrect, but the plugin is not "
+                    "installed on this machine. Open Plugins → Install, or "
+                    "uncheck 'Restore via tmux-resurrect'."
+                )
+            if not resurrect_path.is_file():
+                raise DmuxError(
+                    f"Restore requested via tmux-resurrect, but the saved file "
+                    f"is missing: {resurrect_path}. Uncheck 'Restore via "
+                    "tmux-resurrect' to use the structural restore instead."
+                )
+            try:
+                _resurrect.restore(resurrect_path, socket_path=self._socket_path)
+                return
+            except _resurrect.ResurrectError as e:
+                raise DmuxError(str(e)) from e
+
         server = self.server()
         for sess in snapshot.sessions:
             if server.has_session(sess.name):
@@ -300,11 +602,11 @@ class TmuxService:
             )
             w0 = session.windows[0]
             self._ensure_pane_count(w0, len(first.panes), first)
-            if first.layout_name:
-                try:
-                    w0.select_layout(first.layout_name)
-                except Exception:
-                    pass
+            self._apply_window(
+                w0, first,
+                replay_scrollback=replay_scrollback,
+                relaunch_commands=relaunch_commands,
+            )
 
             for extra in rest:
                 nw = session.new_window(
@@ -312,11 +614,103 @@ class TmuxService:
                     start_directory=extra.panes[0].cwd if extra.panes else None,
                 )
                 self._ensure_pane_count(nw, len(extra.panes), extra)
-                if extra.layout_name:
-                    try:
-                        nw.select_layout(extra.layout_name)
-                    except Exception:
-                        pass
+                self._apply_window(
+                    nw, extra,
+                    replay_scrollback=replay_scrollback,
+                    relaunch_commands=relaunch_commands,
+                )
+
+    def _apply_window(
+        self,
+        window: Window,
+        snap: SnapshotWindow,
+        *,
+        replay_scrollback: bool,
+        relaunch_commands: bool,
+    ) -> None:
+        if snap.layout_name:
+            try:
+                window.select_layout(snap.layout_name)
+            except Exception:
+                pass
+        target = _txt(window.window_id, "")
+        for opt, val in (snap.options or {}).items():
+            if not target or not val:
+                continue
+            try:
+                self._tmux_cli_run(["set-window-option", "-t", target, opt, val])
+            except DmuxError:
+                pass
+
+        panes = list(window.panes)
+        for i, pane in enumerate(panes):
+            if i >= len(snap.panes):
+                break
+            psnap = snap.panes[i]
+            pid = _txt(pane.pane_id, "")
+            if not pid:
+                continue
+            if psnap.title:
+                try:
+                    self._tmux_cli_run(["select-pane", "-t", pid, "-T", psnap.title])
+                except DmuxError:
+                    pass
+            if psnap.style_fg or psnap.style_bg:
+                try:
+                    self.set_pane_style(
+                        pid,
+                        foreground=psnap.style_fg or None,
+                        background=psnap.style_bg or None,
+                    )
+                except DmuxError:
+                    pass
+            if replay_scrollback and psnap.scrollback:
+                self._inject_scrollback(pid, psnap.scrollback)
+            if relaunch_commands and self._cmdline_is_relaunchable(psnap):
+                self._relaunch_command(pid, psnap.cmdline or (psnap.command,))
+
+    def _cmdline_is_relaunchable(self, pane: SnapshotPane) -> bool:
+        head = ""
+        if pane.cmdline:
+            head = pane.cmdline[0]
+        elif pane.command:
+            head = pane.command
+        if not head:
+            return False
+        # Strip leading dash from login-shell argv0 (e.g. "-zsh") and any dir.
+        base = head.split("/")[-1].lstrip("-")
+        if not base:
+            return False
+        return base not in self._SHELL_BINARIES
+
+    def _relaunch_command(self, pane_id: str, argv: tuple[str, ...]) -> None:
+        text = " ".join(a for a in argv if a)
+        if not text.strip():
+            return
+        try:
+            self._tmux_cli_run(["send-keys", "-t", pane_id, text, "Enter"])
+        except DmuxError:
+            pass
+
+    def _inject_scrollback(self, pane_id: str, scrollback: str) -> None:
+        """Echo a saved scrollback into the pane via a heredoc-protected cat.
+
+        Uses an unlikely sentinel so embedded ``EOF``/quoting in the captured
+        text can't terminate the heredoc prematurely.
+        """
+        if not scrollback.strip():
+            return
+        sentinel = "DMUX_SNAPSHOT_REPLAY__"
+        if sentinel in scrollback:
+            return  # extremely unlikely; bail rather than mangle output
+        prefix = "# ── dmux snapshot replay ──"
+        body = f"cat <<'{sentinel}'\n{prefix}\n{scrollback.rstrip()}\n{sentinel}"
+        try:
+            # ``-l`` sends literal characters so quotes/heredocs survive intact.
+            self._tmux_cli_run(["send-keys", "-t", pane_id, "-l", body])
+            self._tmux_cli_run(["send-keys", "-t", pane_id, "Enter"])
+        except DmuxError:
+            pass
 
     def _ensure_pane_count(self, window: Window, count: int, snap: SnapshotWindow) -> None:
         if count <= 0:

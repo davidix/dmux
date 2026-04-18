@@ -434,12 +434,33 @@ def write_fragment(plugin_specs: list[str]) -> None:
     _write_config_file(p, _render_fragment(plugin_specs), what="plugins.tmux")
 
 
+DEFAULT_SEED_PLUGINS: tuple[str, ...] = (
+    # Persists FULL tmux state (per-pane processes, vim/neovim sessions,
+    # optional pane contents + shell history). dmux's "rich" snapshot calls
+    # this plugin's save.sh / restore.sh so every snapshot can truly save
+    # everything. Opt-out by setting DMUX_NO_DEFAULT_PLUGINS=1 in the env
+    # before the fragment is created the first time.
+    "tmux-plugins/tmux-resurrect",
+)
+
+
+def _default_seed_plugins() -> list[str]:
+    if os.environ.get("DMUX_NO_DEFAULT_PLUGINS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return []
+    return list(DEFAULT_SEED_PLUGINS)
+
+
 def ensure_plugins_fragment_exists() -> None:
-    """Create a minimal fragment (tpm only) if missing."""
+    """Create a minimal fragment (tpm + recommended snapshot plugin) if missing."""
     tpm_executable()
     if plugins_fragment_path().is_file():
         return
-    write_fragment([])
+    write_fragment(_default_seed_plugins())
 
 
 def ensure_tmux_conf_hook() -> tuple[bool, str]:

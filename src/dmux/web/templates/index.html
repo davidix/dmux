@@ -107,14 +107,6 @@
                 <i class="bi bi-puzzle me-2" aria-hidden="true"></i>Plugins (TPM)
               </button>
             </div>
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary text-start dmux-sidebar-restore mt-1"
-              id="btn-sidebar-restore-snapshot"
-              title="Restore from SQLite (same as top bar Restore)"
-            >
-              <i class="bi bi-cloud-arrow-up me-2" aria-hidden="true"></i>Restore snapshot…
-            </button>
           </div>
 
           <div class="sidebar-footer mt-auto px-3 py-3 border-top">
@@ -202,7 +194,11 @@
                       <div class="dmux-popover-divider"></div>
                       <button type="button" class="dmux-snap-menu-item" id="btn-save-snapshot-menu" role="menuitem">
                         <i class="bi bi-cloud-arrow-down me-2 text-primary" aria-hidden="true"></i>Save snapshot
-                        <span class="dmux-snap-menu-hint">Same as <code>dmux save</code></span>
+                        <span class="dmux-snap-menu-hint">Layout only — same as <code>dmux save</code></span>
+                      </button>
+                      <button type="button" class="dmux-snap-menu-item" id="btn-save-snapshot-rich" role="menuitem">
+                        <i class="bi bi-stars me-2 text-warning" aria-hidden="true"></i>Save rich snapshot…
+                        <span class="dmux-snap-menu-hint">Includes pane commands, scrollback &amp; history</span>
                       </button>
                     </div>
                   </span>
@@ -857,6 +853,97 @@
       </form>
     </dialog>
 
+    <dialog class="dmux-dialog" id="modal-snapshot-save-rich" aria-labelledby="modal-snapshot-save-rich-title">
+      <form class="modal-form" id="form-snapshot-save-rich" novalidate>
+        <div class="dmux-dialog-head d-flex align-items-start justify-content-between gap-2 mb-0">
+          <h2 class="dmux-dialog-title h6 mb-0 flex-grow-1 min-w-0" id="modal-snapshot-save-rich-title">
+            <i class="bi bi-stars dmux-dialog-icon" aria-hidden="true"></i>Save rich snapshot
+          </h2>
+          <button
+            type="button"
+            class="btn-close flex-shrink-0 mt-0"
+            id="modal-snapshot-save-rich-dismiss"
+            aria-label="Close"
+          ></button>
+        </div>
+        <p class="modal-lead small text-secondary mb-3">
+          Captures the layout plus pane title, foreground command, and tmux window options.
+          Optional: include each pane's <strong>scrollback</strong> and an extracted
+          <strong>command history</strong>. Bigger payloads stay in SQLite and slow down the
+          snapshot list when very large — keep the line counts modest.
+        </p>
+        <label class="form-label small fw-semibold" for="snapshot-save-label-input">Snapshot label</label>
+        <input
+          class="form-control form-control-sm mb-3"
+          type="text"
+          id="snapshot-save-label-input"
+          value="default"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="snapshot-save-include-scrollback" checked autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-save-include-scrollback">
+            Include scrollback
+            <span class="text-secondary small">— raw text from <code>capture-pane</code></span>
+          </label>
+        </div>
+        <div class="row g-2 align-items-center mb-3">
+          <div class="col-auto">
+            <label class="form-label small mb-0" for="snapshot-save-scrollback-lines">Scrollback lines / pane</label>
+          </div>
+          <div class="col">
+            <input
+              type="number"
+              class="form-control form-control-sm"
+              id="snapshot-save-scrollback-lines"
+              min="0"
+              max="20000"
+              step="100"
+              value="2000"
+            />
+          </div>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="snapshot-save-include-history" checked autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-save-include-history">
+            Include extracted command history
+            <span class="text-secondary small">— heuristic: lines after a prompt</span>
+          </label>
+        </div>
+        <div class="row g-2 align-items-center mb-3">
+          <div class="col-auto">
+            <label class="form-label small mb-0" for="snapshot-save-history-lines">History lines / pane</label>
+          </div>
+          <div class="col">
+            <input
+              type="number"
+              class="form-control form-control-sm"
+              id="snapshot-save-history-lines"
+              min="0"
+              max="5000"
+              step="50"
+              value="200"
+            />
+          </div>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="snapshot-save-use-resurrect" autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-save-use-resurrect">
+            Save everything via <code>tmux-resurrect</code>
+            <span class="text-secondary small">— per-pane processes, vim/neovim sessions, full pane contents, optional shell history</span>
+          </label>
+        </div>
+        <p class="small text-secondary mb-3 ms-4 hidden" id="snapshot-save-resurrect-hint" aria-live="polite"></p>
+        <div class="modal-actions d-flex flex-wrap justify-content-end gap-2 pt-3 border-top mt-2">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="modal-snapshot-save-rich-cancel">Cancel</button>
+          <button type="submit" class="btn btn-sm btn-primary" id="modal-snapshot-save-rich-submit">
+            <i class="bi bi-cloud-arrow-down me-1" aria-hidden="true"></i>Save snapshot
+          </button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog class="dmux-dialog dmux-dialog--snapshots" id="modal-snapshots-restore" aria-labelledby="modal-snapshots-restore-title">
       <div class="modal-form">
         <div class="dmux-dialog-head d-flex align-items-start justify-content-between gap-2 mb-0">
@@ -874,9 +961,33 @@
           Rebuilds sessions from the saved layout in SQLite (same as <code>dmux restore</code>). If session names already exist, turn on
           <strong>Kill conflicting sessions</strong> first (<code>--kill</code>).
         </p>
-        <div class="form-check mb-3">
+        <div class="form-check mb-2">
           <input class="form-check-input" type="checkbox" id="snapshot-restore-kill" autocomplete="off" />
-          <label class="form-check-label small" for="snapshot-restore-kill">Kill conflicting sessions</label>
+          <label class="form-check-label small" for="snapshot-restore-kill">
+            Kill conflicting sessions
+            <span class="text-secondary small">— overwrites any session with the same name</span>
+          </label>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="snapshot-restore-replay" autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-restore-replay">
+            Replay scrollback into each pane
+            <span class="text-secondary small">— prints saved history above the new prompt (only for snapshots that captured it)</span>
+          </label>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="snapshot-restore-relaunch" autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-restore-relaunch">
+            Re-launch foreground commands
+            <span class="text-secondary small">— re-runs apps like <code>vim</code> / <code>htop</code>; shells are skipped</span>
+          </label>
+        </div>
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="snapshot-restore-use-resurrect" autocomplete="off" />
+          <label class="form-check-label small" for="snapshot-restore-use-resurrect">
+            Restore via <code>tmux-resurrect</code> when available
+            <span class="text-secondary small">— uses the plugin's own restore script; supersedes the structural rebuild for snapshots that captured it</span>
+          </label>
         </div>
         <p class="small fw-semibold mb-2 text-secondary" id="snapshot-restore-count" aria-live="polite"></p>
         <div
