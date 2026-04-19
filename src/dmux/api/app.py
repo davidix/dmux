@@ -509,6 +509,95 @@ def create_app(*, socket_path: str | None = None) -> Flask:
         use_resurrect = bool(data.get("use_resurrect", False))
         raw_id = data.get("id")
         raw_label = data.get("label")
+        raw_resurrect_file = data.get("resurrect_file")
+
+        # Ad-hoc restore from a tmux-resurrect file on disk that dmux never
+        # captured into SQLite (e.g. files written by the plugin itself, or
+        # tmux-continuum auto-saves). Confined to the plugin's save dir so
+        # callers can't point us at arbitrary files.
+        if raw_resurrect_file is not None and str(raw_resurrect_file).strip():
+            from pathlib import Path as _Path
+
+            from dmux.services import resurrect as _resurrect
+
+            file_path = _Path(str(raw_resurrect_file)).expanduser()
+            try:
+                resolved = file_path.resolve()
+            except OSError as e:
+                return jsonify({"error": f"invalid path: {e}"}), 400
+            base = _resurrect.save_dir(socket_path=socket_path).resolve()
+            try:
+                resolved.relative_to(base)
+            except ValueError:
+                return jsonify({
+                    "error": f"refusing to restore from {resolved}: "
+                    f"not inside resurrect save dir {base}"
+                }), 400
+            if not resolved.is_file():
+                return jsonify({"error": f"resurrect file not found: {resolved}"}), 404
+
+            # tmux-resurrect's restore.sh silently SKIPS any session/window/pane
+            # that already exists. When the caller asked for kill_existing, we
+            # pre-kill the snapshot's sessions so the plugin's restore is a
+            # true replay rather than a partial no-op.
+            killed: list[str] = []
+            preexisting: list[str] = []
+            try:
+                summary = _resurrect.parse_save_file(resolved)
+                snap_sessions = [
+                    str(n) for n in summary.get("session_names", [])  # type: ignore[union-attr]
+                    if str(n).strip()
+                ]
+            except Exception:  # noqa: BLE001 — bad parse shouldn't block restore
+                snap_sessions = []
+            if snap_sessions:
+                try:
+                    server = tmux.server()
+                    for name in snap_sessions:
+                        try:
+                            exists = server.has_session(name)
+                        except Exception:  # noqa: BLE001 — libtmux may throw here
+                            exists = False
+                        if not exists:
+                            continue
+                        preexisting.append(name)
+                        if kill_existing:
+                            try:
+                                tmux.kill_session(name)
+                                killed.append(name)
+                            except Exception as e:  # noqa: BLE001
+                                app.logger.warning(
+                                    "resurrect pre-kill failed for %s: %s", name, e
+                                )
+                except Exception as e:  # noqa: BLE001 — no live server is fine
+                    app.logger.info("resurrect pre-flight skipped: %s", e)
+            try:
+                _resurrect.restore(resolved, socket_path=socket_path)
+                tmux.refresh()
+                return jsonify({
+                    "ok": True,
+                    "resurrect_file": str(resolved),
+                    "killed_sessions": killed,
+                    "preexisting_sessions": preexisting,
+                    "skipped_sessions": [
+                        n for n in preexisting if n not in killed
+                    ],
+                }), 200
+            except _resurrect.ResurrectError as e:
+                # Log so failures are visible in the dev server output —
+                # 400 alone in the access log loses the actual reason.
+                app.logger.warning(
+                    "resurrect restore failed for %s: %s", resolved, e
+                )
+                return jsonify({
+                    "error": str(e),
+                    "resurrect_file": str(resolved),
+                    "killed_sessions": killed,
+                    "preexisting_sessions": preexisting,
+                }), 400
+            except Exception as e:  # noqa: BLE001 — surface unknown errors
+                app.logger.exception("resurrect file restore crashed")
+                return jsonify({"error": f"unexpected error: {e}"}), 500
 
         if raw_id is not None and raw_id != "":
             try:
@@ -555,6 +644,51 @@ def create_app(*, socket_path: str | None = None) -> Flask:
         from dmux.services import resurrect as _resurrect
 
         return jsonify(_resurrect.status(socket_path=socket_path)), 200
+
+    @app.get("/api/v1/snapshots/resurrect/files")
+    def snapshots_resurrect_files() -> ResponseReturnValue:
+        """List tmux-resurrect snapshot files written to disk by the plugin.
+
+        These aren't tracked in dmux's SQLite store — they were created by
+        the plugin itself (manual ``prefix + Ctrl-s``, ``tmux-continuum``,
+        or any other path that runs ``scripts/save.sh`` directly). The UI
+        merges them with SQLite snapshots in the restore modal so users
+        can replay them without leaving dmux.
+        """
+        from dmux.services import resurrect as _resurrect
+
+        # Make sure the latest snapshot has its own pane-contents archive
+        # before we list (one-shot for legacy saves; no-op once stashed).
+        try:
+            _resurrect.adopt_existing_contents_archive(socket_path=socket_path)
+        except Exception as e:  # never let the listing endpoint 500 on this
+            app.logger.warning("could not adopt resurrect contents archive: %s", e)
+        files = _resurrect.list_save_files_detailed(socket_path=socket_path)
+        return jsonify({
+            "save_dir": str(_resurrect.save_dir(socket_path=socket_path)),
+            "installed": _resurrect.is_installed(),
+            "files": files,
+        }), 200
+
+    @app.delete("/api/v1/snapshots/resurrect/files")
+    def snapshots_resurrect_files_delete() -> ResponseReturnValue:
+        """Remove an on-disk tmux-resurrect file (must live inside the save dir)."""
+        from pathlib import Path as _Path
+
+        from dmux.services import resurrect as _resurrect
+
+        data = request.get_json(silent=True) or {}
+        raw = data.get("path") or request.args.get("path")
+        if not raw:
+            return jsonify({"error": "path is required"}), 400
+        try:
+            _resurrect.delete_save_file(
+                _Path(str(raw)).expanduser(),
+                socket_path=socket_path,
+            )
+        except _resurrect.ResurrectError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"ok": True}), 200
 
     @app.get("/api/v1/plugins")
     def plugins_status() -> ResponseReturnValue:

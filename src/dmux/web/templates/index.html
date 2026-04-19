@@ -321,10 +321,10 @@
                     </div>
                   </div>
                 </details>
-                <form class="plugins-add row g-2 align-items-end mb-3" id="form-add-plugin">
-                  <div class="col-12 col-md">
-                    <label class="plugins-add-label form-label small fw-semibold mb-1">
-                      Add plugin
+                <form class="plugins-add mb-3" id="form-add-plugin">
+                  <div class="row g-2 plugins-add-main-row">
+                    <div class="col-12 col-md min-w-0">
+                      <label for="plugin-spec" class="plugins-add-label form-label small fw-semibold mb-1">Add plugin</label>
                       <div class="plugins-add-combo">
                         <div class="plugins-add-combo-row input-group input-group-sm">
                           <input
@@ -359,22 +359,35 @@
                           aria-label="tmux plugin suggestions, grouped by category"
                         ></ul>
                       </div>
-                      <span id="plugin-spec-hint" class="plugins-add-hint form-text">
-                        Suggestions from the
-                        <a href="https://github.com/tmux-plugins/list" target="_blank" rel="noopener noreferrer">tmux-plugins/list</a>
-                        awesome list, merged with the live
-                        <a href="https://github.com/tmux-plugins" target="_blank" rel="noopener noreferrer">tmux-plugins</a> org. You can
-                        also paste any <code>user/repo</code>, full git URL, or append <code>#branch</code>.
-                      </span>
-                    </label>
+                    </div>
+                    <div class="col-12 col-md-auto d-flex align-items-end plugins-add-actions-col">
+                      <button type="submit" class="btn btn-sm btn-primary plugins-add-submit" id="btn-plugin-add">
+                        <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add
+                      </button>
+                    </div>
                   </div>
-                  <div class="col-12 col-md-auto">
-                    <button type="submit" class="btn btn-sm btn-primary w-100" id="btn-plugin-add">
-                      <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add
-                    </button>
-                  </div>
+                  <p id="plugin-spec-hint" class="plugins-add-hint form-text small text-secondary mb-0 mt-2">
+                    Suggestions from the
+                    <a href="https://github.com/tmux-plugins/list" target="_blank" rel="noopener noreferrer">tmux-plugins/list</a>
+                    awesome list, merged with the live
+                    <a href="https://github.com/tmux-plugins" target="_blank" rel="noopener noreferrer">tmux-plugins</a> org. You can also paste
+                    any <code>user/repo</code>, full git URL, or append <code>#branch</code>.
+                  </p>
                 </form>
-                <div class="plugins-table-wrap rounded-3 border bg-body shadow-sm overflow-hidden">
+                <div class="plugins-table-bar d-flex justify-content-end align-items-center mb-2">
+                  <div class="form-check form-switch form-check-reverse mb-0">
+                    <input
+                      class="form-check-input"
+                      type="checkbox"
+                      id="plugins-table-compact"
+                      role="switch"
+                      aria-controls="plugins-table-panel"
+                      title="Tighter rows and smaller type; hides suggested plugins.tmux snippet blocks in About"
+                    />
+                    <label class="form-check-label small text-secondary" for="plugins-table-compact">Compact table</label>
+                  </div>
+                </div>
+                <div id="plugins-table-panel" class="plugins-table-wrap rounded-3 border bg-body shadow-sm overflow-hidden">
                   <div class="table-responsive">
                     <table class="plugins-table table table-sm table-hover align-middle mb-0" aria-label="Configured plugins">
                       <thead>
@@ -997,6 +1010,25 @@
           aria-label="Saved snapshots"
         ></div>
         <p class="small text-secondary mb-0 hidden" id="snapshot-restore-empty"></p>
+        <div class="hidden mt-3" id="snapshot-restore-resurrect-section">
+          <div class="d-flex align-items-baseline justify-content-between gap-2 mb-1">
+            <h3 class="h6 small fw-semibold text-secondary mb-0">
+              <i class="bi bi-hdd-stack me-1" aria-hidden="true"></i>tmux-resurrect snapshots on disk
+            </h3>
+            <span class="snapshot-restore-meta text-secondary" id="snapshot-restore-resurrect-count"></span>
+          </div>
+          <p class="small text-secondary mb-2" id="snapshot-restore-resurrect-hint">
+            Files written by the <code>tmux-resurrect</code> plugin itself (or
+            <code>tmux-continuum</code> auto-saves). Restoring one runs the
+            plugin's <code>scripts/restore.sh</code>.
+          </p>
+          <div
+            class="snapshot-restore-list rounded-3 border overflow-auto"
+            id="snapshot-restore-resurrect-list"
+            role="list"
+            aria-label="On-disk tmux-resurrect snapshots"
+          ></div>
+        </div>
         <div class="modal-actions d-flex flex-wrap justify-content-end gap-2 pt-3 border-top mt-2">
           <button type="button" class="btn btn-sm btn-outline-secondary" id="modal-snapshots-restore-close">Close</button>
         </div>

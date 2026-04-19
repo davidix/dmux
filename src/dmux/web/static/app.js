@@ -3,11 +3,11 @@
  */
 
 const LAYOUTS = [
-  { kind: "grid", label: "Grid" },
-  { kind: "vertical", label: "Vertical" },
-  { kind: "horizontal", label: "Horizontal" },
-  { kind: "main-horizontal", label: "Main H" },
-  { kind: "main-vertical", label: "Main V" },
+  { kind: "grid", label: "Grid", icon: "bi-grid-3x3" },
+  { kind: "vertical", label: "Vertical", icon: "bi-layout-split" },
+  { kind: "horizontal", label: "Horizontal", icon: "bi-layout-three-columns" },
+  { kind: "main-horizontal", label: "Main H", icon: "bi-window-desktop" },
+  { kind: "main-vertical", label: "Main V", icon: "bi-columns-gap" },
 ];
 
 let sessionsData = [];
@@ -181,6 +181,35 @@ async function fetchPluginsStatus() {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+const PLUGINS_TABLE_COMPACT_LS = "dmux-plugins-table-compact";
+
+function applyPluginsTableCompact(on) {
+  const wrap = document.querySelector("#plugins-table-panel.plugins-table-wrap");
+  const sw = el("plugins-table-compact");
+  if (wrap) wrap.classList.toggle("plugins-table-wrap--compact", Boolean(on));
+  if (sw) sw.checked = Boolean(on);
+  try {
+    localStorage.setItem(PLUGINS_TABLE_COMPACT_LS, on ? "1" : "0");
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function readPluginsTableCompactPreference() {
+  try {
+    return localStorage.getItem(PLUGINS_TABLE_COMPACT_LS) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function initPluginsTableCompact() {
+  const sw = el("plugins-table-compact");
+  if (!sw) return;
+  applyPluginsTableCompact(readPluginsTableCompactPreference());
+  sw.addEventListener("change", () => applyPluginsTableCompact(sw.checked));
 }
 
 /** Load GET /api/v1/plugins/catalog once; fills pluginCatalogEntries + pluginCatalogSpecs. */
@@ -570,17 +599,18 @@ async function loadPluginsPanel() {
       const spec = String(p.spec || "");
       const dir = String(p.directory || "");
       const inst = p.installed ? "yes" : "no";
-      tr.innerHTML = `<td class="plugins-spec-col">${escapeHtml(spec)}</td><td class="plugins-about-cell" data-plugin-about></td><td class="mono">${escapeHtml(dir)}</td><td>${inst}</td><td class="plugins-actions"></td>`;
+      tr.innerHTML = `<td class="plugins-spec-col">${escapeHtml(spec)}</td><td class="plugins-about-cell" data-plugin-about></td><td class="plugins-folder-cell mono">${escapeHtml(dir)}</td><td class="plugins-installed-cell">${escapeHtml(inst)}</td><td class="plugins-actions"><div class="plugins-actions-inner"></div></td>`;
       const aboutTd = tr.querySelector("[data-plugin-about]");
       if (aboutTd) aboutTasks.push(fillPluginAboutCell(aboutTd, spec));
-      const actions = tr.querySelector("td:last-child");
+      const actions = tr.querySelector(".plugins-actions-inner");
       const isTpm = spec === "tmux-plugins/tpm";
 
       if (spec && !isTpm) {
         const applyBtn = document.createElement("button");
         applyBtn.type = "button";
-        applyBtn.className = "btn btn-secondary";
-        applyBtn.textContent = "Apply config";
+        applyBtn.className = "btn btn-sm btn-outline-secondary plugins-row-btn";
+        applyBtn.innerHTML =
+          '<i class="bi bi-file-earmark-plus me-1" aria-hidden="true"></i>Apply config';
         applyBtn.title =
           "Write suggested tmux options for this plugin into plugins.tmux (from README / dmux defaults)";
         applyBtn.addEventListener("click", async () => {
@@ -601,8 +631,9 @@ async function loadPluginsPanel() {
       if (!p.installed && spec) {
         const installBtn = document.createElement("button");
         installBtn.type = "button";
-        installBtn.className = "btn btn-primary";
-        installBtn.textContent = "Install";
+        installBtn.className = "btn btn-sm btn-primary plugins-row-btn";
+        installBtn.innerHTML =
+          '<i class="bi bi-download me-1" aria-hidden="true"></i>Install';
         installBtn.addEventListener("click", async () => {
           installBtn.disabled = true;
           try {
@@ -625,8 +656,8 @@ async function loadPluginsPanel() {
       if (p.installed && spec && !isTpm) {
         const rm = document.createElement("button");
         rm.type = "button";
-        rm.className = "btn btn-secondary";
-        rm.textContent = "Remove";
+        rm.className = "btn btn-sm btn-outline-danger plugins-row-btn";
+        rm.innerHTML = '<i class="bi bi-trash me-1" aria-hidden="true"></i>Remove';
         rm.addEventListener("click", async () => {
           try {
             const r = await fetch(
@@ -643,7 +674,9 @@ async function loadPluginsPanel() {
         });
         actions.appendChild(rm);
       }
-      if (!actions.children.length) actions.textContent = "—";
+      if (!actions.children.length) {
+        actions.innerHTML = '<span class="plugins-actions-empty text-secondary">—</span>';
+      }
       tbody.appendChild(tr);
     }
     await Promise.all(aboutTasks);
@@ -1095,9 +1128,54 @@ async function deleteSnapshotById(snapshotId) {
   return data;
 }
 
+async function fetchExistingSessionNames() {
+  try {
+    const data = await fetchSessions();
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    return new Set(sessions.map((s) => String(s?.name || "")).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+async function fetchResurrectFiles() {
+  const res = await fetch(apiUrl("/api/v1/snapshots/resurrect/files"), {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return {
+    saveDir: typeof data.save_dir === "string" ? data.save_dir : "",
+    installed: Boolean(data.installed),
+    files: Array.isArray(data.files) ? data.files : [],
+  };
+}
+
+/** @param {string} path */
+async function deleteResurrectFile(path) {
+  const res = await fetch(apiUrl("/api/v1/snapshots/resurrect/files"), {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
 async function refreshSnapshotRestoreListInModal() {
-  const snapshots = await fetchSnapshotsList();
+  const [snapshots, resurrect] = await Promise.all([
+    fetchSnapshotsList(),
+    fetchResurrectFiles().catch(() => ({ saveDir: "", installed: false, files: [] })),
+  ]);
   renderSnapshotRestoreList(snapshots);
+  renderResurrectFilesList(resurrect);
+  updateSnapshotRestoreCount(snapshots.length, resurrect.files.length);
+  if (snapshots.length === 0 && resurrect.files.length > 0) {
+    el("snapshot-restore-empty")?.classList.add("hidden");
+  }
 }
 
 /** @param {number} ts */
@@ -1169,15 +1247,254 @@ function appendSnapshotBadges(title, s) {
   }
 }
 
+/** @param {number} sqliteCount @param {number} diskCount */
+function updateSnapshotRestoreCount(sqliteCount, diskCount) {
+  const countEl = el("snapshot-restore-count");
+  if (!countEl) return;
+  if (sqliteCount === 0 && diskCount === 0) {
+    countEl.textContent = "No snapshots found";
+    return;
+  }
+  const parts = [];
+  parts.push(`${sqliteCount} dmux snapshot${sqliteCount === 1 ? "" : "s"}`);
+  if (diskCount > 0) {
+    parts.push(`${diskCount} tmux-resurrect file${diskCount === 1 ? "" : "s"}`);
+  }
+  countEl.textContent = parts.join(" · ");
+}
+
+/** @param {number} ts */
+function formatResurrectFileTime(ts) {
+  if (typeof ts !== "number" || Number.isNaN(ts)) return "—";
+  try {
+    return new Date(ts * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return String(ts);
+  }
+}
+
+/** @param {number} bytes */
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+/** @param {Record<string, unknown>} summary */
+function resurrectSummaryLine(summary) {
+  if (!summary || typeof summary !== "object") return "";
+  if (summary.parse_error) return `Could not read snapshot: ${String(summary.parse_error)}`;
+  const sc = Number(summary.session_count) || 0;
+  const wc = Number(summary.window_count) || 0;
+  const pc = Number(summary.pane_count) || 0;
+  const names = Array.isArray(summary.session_names) ? summary.session_names : [];
+  const head = names.slice(0, 5).filter((x) => x && String(x).trim());
+  const more = names.length > 5 ? "…" : "";
+  const tail = head.length ? ` — ${head.join(", ")}${more}` : "";
+  const cur = summary.current_session ? ` · current ${String(summary.current_session)}` : "";
+  return `${sc} session${sc === 1 ? "" : "s"} · ${wc} window${wc === 1 ? "" : "s"} · ${pc} pane${pc === 1 ? "" : "s"}${tail}${cur}`;
+}
+
+/** @param {{saveDir: string, installed: boolean, files: Array<Record<string, unknown>>}} payload */
+function renderResurrectFilesList(payload) {
+  const section = el("snapshot-restore-resurrect-section");
+  const list = el("snapshot-restore-resurrect-list");
+  const countEl = el("snapshot-restore-resurrect-count");
+  const hint = el("snapshot-restore-resurrect-hint");
+  if (!section || !list || !countEl) return;
+  list.innerHTML = "";
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+  const n = files.length;
+  countEl.textContent = payload?.saveDir ? payload.saveDir : "";
+  if (n === 0) {
+    section.classList.add("hidden");
+    return;
+  }
+  section.classList.remove("hidden");
+  const installed = Boolean(payload?.installed);
+  if (hint) {
+    hint.textContent = installed
+      ? "Files written by the tmux-resurrect plugin itself (or tmux-continuum auto-saves). Restoring one runs the plugin's scripts/restore.sh."
+      : "Found tmux-resurrect snapshot files on disk, but the plugin isn't installed via TPM in this dmux. Install it (Plugins → Install) before restoring.";
+  }
+  for (const raw of files) {
+    const f = raw && typeof raw === "object" ? raw : {};
+    const path = String(f.path || "");
+    const name = String(f.name || path || "");
+    const summary = (f.summary && typeof f.summary === "object")
+      ? /** @type {Record<string, unknown>} */ (f.summary)
+      : {};
+    const row = document.createElement("div");
+    row.className =
+      "snapshot-restore-item border-bottom d-flex flex-column flex-md-row gap-2 gap-md-3 align-items-start align-items-md-center justify-content-between p-2 p-md-3";
+    row.setAttribute("role", "listitem");
+    const left = document.createElement("div");
+    left.className = "min-w-0 flex-grow-1";
+    const title = document.createElement("div");
+    title.className = "small fw-semibold d-flex flex-wrap align-items-center gap-2";
+    const icon = document.createElement("span");
+    icon.className = "snapshot-restore-meta text-secondary";
+    icon.textContent = "resurrect";
+    title.appendChild(icon);
+    const nameEl = document.createElement("span");
+    nameEl.className = "text-truncate";
+    nameEl.textContent = name;
+    title.appendChild(nameEl);
+    if (f.is_last) {
+      const last = document.createElement("span");
+      last.className = "badge rounded-pill text-bg-primary-subtle text-primary-emphasis border";
+      last.textContent = "last";
+      last.title = "Plugin's `last` symlink points here — what scripts/restore.sh would replay by default";
+      title.appendChild(last);
+    }
+    const cmds = Array.isArray(summary.commands) ? summary.commands : [];
+    if (cmds.length > 0) {
+      const cmdsBadge = document.createElement("span");
+      cmdsBadge.className = "badge rounded-pill text-bg-info-subtle text-info-emphasis border";
+      cmdsBadge.textContent = `commands · ${cmds.length}`;
+      cmdsBadge.title = `Foreground commands captured: ${cmds.slice(0, 8).join(", ")}${cmds.length > 8 ? "…" : ""}`;
+      title.appendChild(cmdsBadge);
+    }
+    // History indicator: tmux-resurrect only restores pane scrollback when a
+    // matching pane_contents archive exists. dmux stashes one per snapshot,
+    // but legacy/external saves only have the live archive (which matches
+    // whichever save was most recent at capture time).
+    const hasHist = Boolean(f.has_contents_archive);
+    const histBadge = document.createElement("span");
+    if (hasHist) {
+      histBadge.className = "badge rounded-pill text-bg-success-subtle text-success-emphasis border";
+      histBadge.textContent = "history";
+      const histSize = Number(f.contents_archive_size) || 0;
+      histBadge.title = `Includes per-snapshot pane scrollback (${formatBytes(histSize)}). Restore will replay history, processes and visible output.`;
+    } else {
+      histBadge.className = "badge rounded-pill text-bg-warning-subtle text-warning-emphasis border";
+      histBadge.textContent = "no history";
+      histBadge.title =
+        "No matching pane_contents archive on disk for this snapshot. " +
+        "Restore will recreate windows/panes and start configured processes, " +
+        "but pane scrollback / visible output won't be replayed. " +
+        "(tmux-resurrect keeps a single shared archive that's overwritten on every save.)";
+    }
+    title.appendChild(histBadge);
+    const when = document.createElement("div");
+    when.className = "snapshot-restore-meta text-secondary mt-1";
+    when.textContent = `${formatResurrectFileTime(Number(f.mtime))} · ${formatBytes(Number(f.size))}`;
+    const detail = document.createElement("p");
+    detail.className = "small text-secondary mb-0 mt-1";
+    detail.textContent = resurrectSummaryLine(summary);
+    const pathEl = document.createElement("p");
+    pathEl.className = "snapshot-restore-meta text-secondary mb-0 mt-1 text-break";
+    pathEl.textContent = path;
+    left.appendChild(title);
+    left.appendChild(when);
+    left.appendChild(detail);
+    if (cmds.length > 0) {
+      const cmdLine = document.createElement("p");
+      cmdLine.className = "small text-secondary mb-0 mt-1";
+      const head = cmds.slice(0, 6);
+      const more = cmds.length > head.length ? ` +${cmds.length - head.length} more` : "";
+      cmdLine.innerHTML = `<span class="text-secondary">apps:</span> <span class="font-monospace">${head.map(escapeHtml).join(", ")}</span>${more}`;
+      left.appendChild(cmdLine);
+    }
+    left.appendChild(pathEl);
+    const actions = document.createElement("div");
+    actions.className = "snapshot-restore-actions flex-shrink-0";
+    const restoreBtn = document.createElement("button");
+    restoreBtn.type = "button";
+    restoreBtn.className = "btn btn-sm btn-primary snapshot-restore-restore-btn";
+    restoreBtn.textContent = "Restore";
+    restoreBtn.disabled = !installed;
+    if (!installed) restoreBtn.title = "tmux-resurrect plugin is not installed";
+    restoreBtn.addEventListener("click", async () => {
+      const kill = Boolean(el("snapshot-restore-kill")?.checked);
+      const sessionNames = Array.isArray(summary.session_names) ? summary.session_names : [];
+      // Warn early when the snapshot has sessions that already exist and
+      // the user didn't tick "Kill conflicting sessions" — otherwise
+      // tmux-resurrect's restore.sh would silently skip them and the
+      // click would look like a no-op.
+      if (!kill && sessionNames.length > 0) {
+        const existing = await fetchExistingSessionNames();
+        const conflicts = sessionNames.filter((s) => existing.has(String(s)));
+        if (conflicts.length > 0) {
+          const proceed = window.confirm(
+            `tmux-resurrect won't overwrite sessions that already exist. ` +
+            `These would be skipped: ${conflicts.join(", ")}.\n\n` +
+            `OK to continue anyway, or Cancel to tick "Kill conflicting sessions" first.`,
+          );
+          if (!proceed) return;
+        }
+      }
+      const allBtns = document.querySelectorAll(
+        "#modal-snapshots-restore .snapshot-restore-restore-btn, #modal-snapshots-restore .snapshot-restore-delete-btn",
+      );
+      allBtns.forEach((b) => {
+        b.disabled = true;
+      });
+      try {
+        const r = await postSnapshotRestore({
+          resurrect_file: path,
+          kill_existing: kill,
+        });
+        const killed = Array.isArray(r?.killed_sessions) ? r.killed_sessions : [];
+        const skipped = Array.isArray(r?.skipped_sessions) ? r.skipped_sessions : [];
+        let msg = `Restored from ${name}`;
+        if (killed.length) msg += ` (killed first: ${killed.join(", ")})`;
+        if (skipped.length) msg += ` — skipped existing: ${skipped.join(", ")}`;
+        if (!hasHist) msg += " · pane history not replayed (no archive)";
+        toast(msg, skipped.length || !hasHist ? "warn" : undefined);
+        el("modal-snapshots-restore")?.close();
+        await refresh({ silent: true });
+      } catch (e) {
+        toast(String(e.message || e), "err");
+      } finally {
+        allBtns.forEach((b) => {
+          b.disabled = false;
+        });
+        if (!installed) restoreBtn.disabled = true;
+      }
+    });
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn btn-sm btn-outline-danger snapshot-restore-delete-btn";
+    delBtn.title = `Delete ${name} from disk`;
+    delBtn.setAttribute("aria-label", `Delete ${name}`);
+    delBtn.innerHTML = '<i class="bi bi-trash" aria-hidden="true"></i>';
+    delBtn.addEventListener("click", async () => {
+      if (!window.confirm(`Delete ${name} from ${payload.saveDir}? This cannot be undone.`)) return;
+      delBtn.disabled = true;
+      restoreBtn.disabled = true;
+      try {
+        await deleteResurrectFile(path);
+        toast(`Deleted ${name}`);
+        await refreshSnapshotRestoreListInModal();
+      } catch (e) {
+        toast(String(e.message || e), "err");
+        delBtn.disabled = false;
+        if (installed) restoreBtn.disabled = false;
+      }
+    });
+    actions.appendChild(restoreBtn);
+    actions.appendChild(delBtn);
+    row.appendChild(left);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
 /** @param {Record<string, unknown>[]} snapshots */
 function renderSnapshotRestoreList(snapshots) {
   const list = el("snapshot-restore-list");
   const empty = el("snapshot-restore-empty");
-  const countEl = el("snapshot-restore-count");
-  if (!list || !empty || !countEl) return;
+  if (!list || !empty) return;
   list.innerHTML = "";
   const n = snapshots.length;
-  countEl.textContent = n === 0 ? "0 snapshots on disk" : `${n} snapshot${n === 1 ? "" : "s"} on disk`;
   empty.classList.toggle("hidden", n > 0);
   list.classList.toggle("hidden", n === 0);
   for (const raw of snapshots) {
@@ -1296,6 +1613,8 @@ async function openSnapshotsRestoreModal() {
   if (emptyMsg) emptyMsg.textContent = SNAPSHOT_RESTORE_EMPTY_DEFAULT;
   const list = el("snapshot-restore-list");
   if (list) list.innerHTML = "";
+  const resurrectSection = el("snapshot-restore-resurrect-section");
+  resurrectSection?.classList.add("hidden");
   const countEl = el("snapshot-restore-count");
   if (countEl) countEl.textContent = "Loading…";
   modal.showModal();
@@ -1303,8 +1622,16 @@ async function openSnapshotsRestoreModal() {
     defaultCheckedWhenInstalled: false,
   });
   try {
-    const snapshots = await fetchSnapshotsList();
+    const [snapshots, resurrect] = await Promise.all([
+      fetchSnapshotsList(),
+      fetchResurrectFiles().catch(() => ({ saveDir: "", installed: false, files: [] })),
+    ]);
     renderSnapshotRestoreList(snapshots);
+    renderResurrectFilesList(resurrect);
+    updateSnapshotRestoreCount(snapshots.length, resurrect.files.length);
+    if (snapshots.length === 0 && resurrect.files.length > 0) {
+      emptyMsg?.classList.add("hidden");
+    }
   } catch (e) {
     if (countEl) countEl.textContent = "Could not load snapshots";
     emptyMsg?.classList.remove("hidden");
@@ -1461,19 +1788,137 @@ function openPaneStyleModal(paneId) {
   requestAnimationFrame(() => font.focus());
 }
 
-/** Cell grid size for the window (tmux #{pane_left}+#{pane_width} etc.). */
-function tmuxPaneGridDimensions(panes) {
-  let gw = 1;
-  let gh = 1;
+/** True if some pane exactly fills the tmux half-open interval [a, b) on this axis. */
+function tmuxAxisSegmentIsRealPane(panes, axis, a, b) {
+  if (b <= a) return false;
+  if (axis === "x") {
+    for (const p of panes) {
+      const pw = Math.max(Number(p.width) || 0, 1);
+      const left = Number.isFinite(Number(p.left)) ? Number(p.left) : 0;
+      if (left === a && left + pw === b) return true;
+    }
+  } else {
+    for (const p of panes) {
+      const ph = Math.max(Number(p.height) || 0, 1);
+      const top = Number.isFinite(Number(p.top)) ? Number(p.top) : 0;
+      if (top === a && top + ph === b) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Drop internal edges that only separate <minSpan cell-wide strips (tmux often
+ * reports 1-cell gutters between panes). Does not remove a strip that is itself a pane.
+ */
+function collapseTmuxAxisEdges(sortedEdges, panes, axis, minSpan = 2) {
+  if (sortedEdges.length <= 2) return sortedEdges.slice();
+  const edges = sortedEdges.slice();
+  for (let guard = 0; guard < 4096; guard++) {
+    let merged = false;
+    for (let i = 0; i < edges.length - 2; i++) {
+      const seg = edges[i + 1] - edges[i];
+      if (seg < minSpan && !tmuxAxisSegmentIsRealPane(panes, axis, edges[i], edges[i + 1])) {
+        edges.splice(i + 1, 1);
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) break;
+  }
+  return edges;
+}
+
+/** 1-based CSS grid line at the start of the track that contains tmux cell c. */
+function tmuxCellToGridStartLine(edges, c) {
+  let j = 0;
+  while (j + 1 < edges.length && edges[j + 1] <= c) {
+    j++;
+  }
+  return j + 1;
+}
+
+/** 1-based CSS grid line at the end edge of the half-open tmux cell range [ , R). */
+function tmuxCellToGridEndLine(edges, R) {
+  let j = 0;
+  while (j < edges.length && edges[j] < R) {
+    j++;
+  }
+  return j + 1;
+}
+
+/**
+ * Build a small CSS grid that matches tmux layout without one track per cell
+ * (tmux uses large cell counts, e.g. width 120 — repeat(120,1fr) breaks the UI).
+ * Tracks use fr weights proportional to tmux cell spans between unique edges.
+ * @returns {{ columnTemplate: string, rowTemplate: string, aspectW: number, aspectH: number, getPlacement: (p: object) => { colStart: number, colEndLine: number, rowStart: number, rowEndLine: number } }}
+ */
+function buildTmuxGridLayout(panes) {
+  if (!panes.length) {
+    return {
+      columnTemplate: "minmax(0, 1fr)",
+      rowTemplate: "minmax(0, 1fr)",
+      aspectW: 1,
+      aspectH: 1,
+      getPlacement: () => ({ colStart: 1, colEndLine: 2, rowStart: 1, rowEndLine: 2 }),
+    };
+  }
+  const xs = new Set();
+  const ys = new Set();
   for (const p of panes) {
     const pw = Math.max(Number(p.width) || 0, 1);
     const ph = Math.max(Number(p.height) || 0, 1);
     const left = Number.isFinite(Number(p.left)) ? Number(p.left) : 0;
     const top = Number.isFinite(Number(p.top)) ? Number(p.top) : 0;
-    gw = Math.max(gw, left + pw);
-    gh = Math.max(gh, top + ph);
+    xs.add(left);
+    xs.add(left + pw);
+    ys.add(top);
+    ys.add(top + ph);
   }
-  return { gridW: gw, gridH: gh };
+  const xEdges = collapseTmuxAxisEdges([...xs].sort((a, b) => a - b), panes, "x");
+  const yEdges = collapseTmuxAxisEdges([...ys].sort((a, b) => a - b), panes, "y");
+  const colSizes = [];
+  for (let i = 0; i < xEdges.length - 1; i++) {
+    colSizes.push(Math.max(xEdges[i + 1] - xEdges[i], 1));
+  }
+  const rowSizes = [];
+  for (let i = 0; i < yEdges.length - 1; i++) {
+    rowSizes.push(Math.max(yEdges[i + 1] - yEdges[i], 1));
+  }
+  const aspectW = Math.max(xEdges[xEdges.length - 1] - xEdges[0], 1);
+  const aspectH = Math.max(yEdges[yEdges.length - 1] - yEdges[0], 1);
+  /* Tracks scale with tmux cell counts but stay readable:
+   *  - Columns use Nfr so they stretch to fill the container's width proportionally
+   *    (no horizontal whitespace; widths reflect tmux cell ratios).
+   *  - Rows are clamped in rem so a single 80×22 pane doesn't blow the mosaic
+   *    up to >1000px tall (no vertical container to bound an Nfr row). */
+  const COL_MIN_REM = 6;
+  const ROW_MIN_REM = 7;
+  const ROW_MAX_REM = 14;
+  const colTrack = (w) => `minmax(${COL_MIN_REM}rem, ${w}fr)`;
+  const rowTrack = (h) => {
+    const max = Math.min(ROW_MAX_REM, Math.max(ROW_MIN_REM, h * 0.35));
+    return `minmax(${ROW_MIN_REM}rem, ${max.toFixed(2)}rem)`;
+  };
+  const columnTemplate = colSizes.map(colTrack).join(" ");
+  const rowTemplate = rowSizes.map(rowTrack).join(" ");
+  function getPlacement(p) {
+    const pw = Math.max(Number(p.width) || 0, 1);
+    const ph = Math.max(Number(p.height) || 0, 1);
+    const left = Number.isFinite(Number(p.left)) ? Number(p.left) : 0;
+    const top = Number.isFinite(Number(p.top)) ? Number(p.top) : 0;
+    const colStart = tmuxCellToGridStartLine(xEdges, left);
+    const colEndLine = tmuxCellToGridEndLine(xEdges, left + pw);
+    const rowStart = tmuxCellToGridStartLine(yEdges, top);
+    const rowEndLine = tmuxCellToGridEndLine(yEdges, top + ph);
+    return {
+      colStart,
+      colEndLine: Math.max(colEndLine, colStart + 1),
+      rowStart,
+      rowEndLine: Math.max(rowEndLine, rowStart + 1),
+    };
+  }
+  return { columnTemplate, rowTemplate, aspectW, aspectH, getPlacement };
 }
 
 /** False when multiple panes share the same top-left (no layout data) — use list fallback. */
@@ -1734,7 +2179,7 @@ function buildPaneMenuItems(pane, window, session) {
  * @param {HTMLElement} mosaic
  * @param {object} p
  * @param {"grid" | "list"} mode
- * @param {{ totalW: number, window: object, session: object }} listCtx
+ * @param {{ totalW: number, window: object, session: object, tmuxLayout?: ReturnType<typeof buildTmuxGridLayout> }} listCtx
  */
 function appendPaneToMosaic(mosaic, p, mode, listCtx) {
   const tile = document.createElement("button");
@@ -1891,12 +2336,19 @@ function appendPaneToMosaic(mosaic, p, mode, listCtx) {
     const cell = document.createElement("div");
     cell.className = "pane-mosaic-cell";
     cell.setAttribute("role", "listitem");
-    const pw = Math.max(Number(p.width) || 0, 1);
-    const ph = Math.max(Number(p.height) || 0, 1);
-    const left = Number.isFinite(Number(p.left)) ? Number(p.left) : 0;
-    const top = Number.isFinite(Number(p.top)) ? Number(p.top) : 0;
-    cell.style.gridColumn = `${left + 1} / span ${pw}`;
-    cell.style.gridRow = `${top + 1} / span ${ph}`;
+    const tl = listCtx.tmuxLayout;
+    if (tl && typeof tl.getPlacement === "function") {
+      const { colStart, colEndLine, rowStart, rowEndLine } = tl.getPlacement(p);
+      cell.style.gridColumn = `${colStart} / ${colEndLine}`;
+      cell.style.gridRow = `${rowStart} / ${rowEndLine}`;
+    } else {
+      const pw = Math.max(Number(p.width) || 0, 1);
+      const ph = Math.max(Number(p.height) || 0, 1);
+      const left = Number.isFinite(Number(p.left)) ? Number(p.left) : 0;
+      const top = Number.isFinite(Number(p.top)) ? Number(p.top) : 0;
+      cell.style.gridColumn = `${left + 1} / span ${pw}`;
+      cell.style.gridRow = `${top + 1} / span ${ph}`;
+    }
     const inner = document.createElement("div");
     inner.className = "pane-mosaic-cell-inner";
     inner.appendChild(tile);
@@ -2105,16 +2557,60 @@ function renderDetail(session) {
   detail.innerHTML = "";
   const windows = session.windows || [];
 
-  if (windows.length > 1) {
-    detail.appendChild(renderWindowTabs(session, windows));
-  }
+  detail.appendChild(renderSessionWindowsStrip(session, windows));
 
   for (const w of windows) {
     detail.appendChild(renderWindowBlock(session, w, windows.length));
   }
 }
 
-/** Sticky tab bar that scrolls to (and focuses) a window's block. */
+/** Top strip: optional window tabs + session-level “New window” (outside each window card). */
+function renderSessionWindowsStrip(session, windows) {
+  const strip = document.createElement("div");
+  strip.className = "session-windows-strip";
+
+  if (windows.length > 1) {
+    strip.appendChild(renderWindowTabs(session, windows));
+  } else {
+    const w0 = windows[0];
+    const hint = document.createElement("span");
+    hint.className = "session-windows-strip-hint";
+    if (w0) {
+      const nm = w0.name ? String(w0.name) : "window";
+      hint.textContent = `Window #1 · ${nm}`;
+    } else {
+      hint.textContent = "No windows in this session yet";
+    }
+    strip.appendChild(hint);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "session-windows-strip-actions";
+  actions.appendChild(makeNewWindowButton(session));
+  strip.appendChild(actions);
+  return strip;
+}
+
+function makeNewWindowButton(session) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn btn-sm btn-outline-primary session-new-window-btn";
+  btn.innerHTML = '<i class="bi bi-window-plus me-1" aria-hidden="true"></i>New window';
+  btn.title = "New window in this session (Ctrl+B c)";
+  btn.setAttribute("aria-label", `New window in session ${session.name}`);
+  btn.addEventListener("click", async () => {
+    try {
+      await newWindow(session.name);
+      toast("New window created");
+      await refresh({ silent: true });
+    } catch (e) {
+      toast(String(e.message || e), "err");
+    }
+  });
+  return btn;
+}
+
+/** Tab bar that scrolls to (and focuses) a window's block (used inside session strip). */
 function renderWindowTabs(session, windows) {
   const bar = document.createElement("nav");
   bar.className = "win-tabs";
@@ -2240,90 +2736,102 @@ function renderWindowHead(session, w, totalWindows) {
 
   head.appendChild(row1);
 
-  /* Row 2: Add + Layout group + Sync toggle + Focus window primary */
+  /* Row 2: Pane split menu + Layout menu + Sync toggle + Focus window primary */
   const row2 = document.createElement("div");
   row2.className = "win-head-row win-head-row-toolbar";
 
-  /* Add cluster */
-  const addGroup = document.createElement("div");
-  addGroup.className = "win-toolbar-group";
-  addGroup.setAttribute("role", "toolbar");
-  addGroup.setAttribute("aria-label", `Add window or panes in window ${w.index + 1}`);
-  const addLab = document.createElement("span");
-  addLab.className = "tools-label";
-  addLab.textContent = "Add";
-  addGroup.appendChild(addLab);
-  const btnNewWin = document.createElement("button");
-  btnNewWin.type = "button";
-  btnNewWin.className = "btn-layout btn-add";
-  btnNewWin.innerHTML = '<i class="bi bi-window-plus me-1"></i>Window';
-  btnNewWin.title = "New window in this session (Ctrl+B c)";
-  btnNewWin.addEventListener("click", async () => {
-    try {
-      await newWindow(session.name);
-      toast("New window created");
-      await refresh({ silent: true });
-    } catch (e) {
-      toast(String(e.message || e), "err");
-    }
-  });
-  addGroup.appendChild(btnNewWin);
-
   const panesList = w.panes || [];
   const paneForSplit = panesList.find((p) => p.active) || panesList[0];
-  const mkSplit = (vertical, label, title) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn-layout btn-add";
-    b.innerHTML = label;
-    b.title = title;
-    b.disabled = !paneForSplit;
-    b.addEventListener("click", async () => {
-      if (!paneForSplit) return;
-      try {
-        await splitPaneApi(paneForSplit.pane_id, vertical);
-        toast(vertical ? "Split (stacked)" : "Split (side by side)");
-        await refresh({ silent: true });
-      } catch (e) {
-        toast(String(e.message || e), "err");
-      }
-    });
-    return b;
-  };
-  addGroup.appendChild(
-    mkSplit(true, '<i class="bi bi-layout-split me-1"></i>Pane ↓', "Split active pane — new pane below (tmux split-window -v)"),
-  );
-  addGroup.appendChild(
-    mkSplit(false, '<i class="bi bi-layout-three-columns me-1"></i>Pane →', "Split active pane — new pane to the right (tmux split-window -h)"),
-  );
-  row2.appendChild(addGroup);
 
-  /* Layout cluster */
+  /* Split panes — dropdown */
+  const splitGroup = document.createElement("div");
+  splitGroup.className = "win-toolbar-group win-toolbar-group--menu";
+  splitGroup.setAttribute("role", "group");
+  splitGroup.setAttribute("aria-label", `Split panes in window ${w.index + 1}`);
+  const splitBtn = document.createElement("button");
+  splitBtn.type = "button";
+  splitBtn.className = "win-toolbar-menu-btn";
+  splitBtn.setAttribute("aria-haspopup", "menu");
+  splitBtn.setAttribute("aria-expanded", "false");
+  splitBtn.setAttribute("aria-label", `Split panes in window ${w.index + 1}`);
+  splitBtn.innerHTML =
+    '<span class="win-toolbar-menu-label">Split</span><i class="bi bi-chevron-down win-toolbar-menu-chevron" aria-hidden="true"></i>';
+  splitBtn.title = "Add a pane by splitting the active pane";
+  splitBtn.disabled = !paneForSplit;
+  splitBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!paneForSplit) return;
+    openPopover(splitBtn, [
+      { section: "Split active pane" },
+      {
+        label: "Below (stacked)",
+        icon: "bi-layout-split",
+        onClick: async () => {
+          try {
+            await splitPaneApi(paneForSplit.pane_id, true);
+            toast("Split (stacked)");
+            await refresh({ silent: true });
+          } catch (e) {
+            toast(String(e.message || e), "err");
+          }
+        },
+      },
+      {
+        label: "To the right",
+        icon: "bi-layout-three-columns",
+        onClick: async () => {
+          try {
+            await splitPaneApi(paneForSplit.pane_id, false);
+            toast("Split (side by side)");
+            await refresh({ silent: true });
+          } catch (e) {
+            toast(String(e.message || e), "err");
+          }
+        },
+      },
+    ]);
+  });
+  splitGroup.appendChild(splitBtn);
+  row2.appendChild(splitGroup);
+
+  /* Layout presets — dropdown */
   const layoutGroup = document.createElement("div");
-  layoutGroup.className = "win-toolbar-group";
-  layoutGroup.setAttribute("role", "toolbar");
+  layoutGroup.className = "win-toolbar-group win-toolbar-group--menu";
+  layoutGroup.setAttribute("role", "group");
   layoutGroup.setAttribute("aria-label", `Window ${w.index + 1} layouts`);
-  const layoutLab = document.createElement("span");
-  layoutLab.className = "tools-label";
-  layoutLab.textContent = "Layout";
-  layoutGroup.appendChild(layoutLab);
-  for (const L of LAYOUTS) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn-layout";
-    b.textContent = L.label;
-    b.title = `Apply ${L.kind} layout (tmux select-layout ${L.kind})`;
-    b.addEventListener("click", async () => {
-      try {
-        await applyLayout(session.name, w.index, L.kind);
-        toast(`Layout: ${L.label}`);
-        await refresh({ silent: true });
-      } catch (e) {
-        toast(String(e.message || e), "err");
-      }
-    });
-    layoutGroup.appendChild(b);
-  }
+  const layoutBtn = document.createElement("button");
+  layoutBtn.type = "button";
+  layoutBtn.className = "win-toolbar-menu-btn";
+  layoutBtn.setAttribute("aria-haspopup", "menu");
+  layoutBtn.setAttribute("aria-expanded", "false");
+  layoutBtn.innerHTML =
+    '<span class="win-toolbar-menu-label">Layout</span><i class="bi bi-chevron-down win-toolbar-menu-chevron" aria-hidden="true"></i>';
+  layoutBtn.title = w.layout_name
+    ? `Current tmux layout string (see chip above). Apply a named preset via select-layout.`
+    : "Apply a tmux layout preset (select-layout)";
+  layoutBtn.setAttribute("aria-label", `Layout presets for window ${w.index + 1}`);
+  layoutBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openPopover(layoutBtn, [
+      { section: "Apply layout" },
+      ...LAYOUTS.map((L) => ({
+        label: L.label,
+        icon: L.icon,
+        onClick: async () => {
+          try {
+            await applyLayout(session.name, w.index, L.kind);
+            toast(`Layout: ${L.label}`);
+            await refresh({ silent: true });
+          } catch (e) {
+            toast(String(e.message || e), "err");
+          }
+        },
+      })),
+    ]);
+  });
+  layoutGroup.appendChild(layoutBtn);
   row2.appendChild(layoutGroup);
 
   /* Sync toggle */
@@ -2451,19 +2959,22 @@ function renderWindowMosaic(session, w) {
   const panes = w.panes || [];
   const totalW = panes.reduce((s, p) => s + Math.max(p.width || 0, 1), 0) || 1;
   const useTmuxGrid = tmuxPanePositionsDistinct(panes);
-  const { gridW, gridH } = tmuxPaneGridDimensions(panes);
+  const tmuxLayout = useTmuxGrid ? buildTmuxGridLayout(panes) : null;
 
   const mosaic = document.createElement("div");
   mosaic.className = "pane-mosaic" + (useTmuxGrid ? " pane-mosaic--tmux" : " pane-mosaic--list");
   mosaic.setAttribute("role", "list");
-  if (useTmuxGrid) {
-    mosaic.style.setProperty("--tmux-cols", String(gridW));
-    mosaic.style.setProperty("--tmux-rows", String(gridH));
+  if (tmuxLayout) {
+    mosaic.style.gridTemplateColumns = tmuxLayout.columnTemplate;
+    mosaic.style.gridTemplateRows = tmuxLayout.rowTemplate;
+    mosaic.style.setProperty("--tmux-aspect-w", String(tmuxLayout.aspectW));
+    mosaic.style.setProperty("--tmux-aspect-h", String(tmuxLayout.aspectH));
   }
 
   const mode = useTmuxGrid ? "grid" : "list";
+  const listCtx = { totalW, window: w, session, tmuxLayout };
   for (const p of panes) {
-    appendPaneToMosaic(mosaic, p, mode, { totalW, window: w, session });
+    appendPaneToMosaic(mosaic, p, mode, listCtx);
   }
   return mosaic;
 }
@@ -3383,5 +3894,6 @@ async function loadServerInfo() {
 updateFilterClear();
 setupPaneStyleForm();
 setupPluginSpecAutocomplete();
+initPluginsTableCompact();
 refresh().then(() => loadServerInfo());
 setupAutoRefresh();

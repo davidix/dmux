@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dmux"
-version = "0.1.0"
+version = "0.2.0"
 description = "Unified control layer over tmux — sessions, persistence, plugins, CLI, and a web UI."
 readme = "README.md"
 requires-python = ">=3.10"

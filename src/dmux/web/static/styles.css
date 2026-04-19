@@ -1082,13 +1082,13 @@ body {
 
 .pane-mosaic--tmux {
   display: grid;
-  grid-template-columns: repeat(var(--tmux-cols, 12), minmax(0, 1fr));
-  grid-template-rows: repeat(var(--tmux-rows, 8), minmax(0, 1fr));
-  gap: 5px;
+  /* grid-template-columns / rows set inline from compressed tmux layout */
+  gap: 6px;
   width: 100%;
-  min-height: 140px;
+  min-width: 0;
   max-width: 100%;
-  aspect-ratio: var(--tmux-cols, 12) / var(--tmux-rows, 8);
+  box-sizing: border-box;
+  /* No aspect-ratio: mosaic grows with content so 4+ panes don't get squashed. */
 }
 
 .pane-mosaic-cell {
@@ -1108,21 +1108,33 @@ body {
 .pane-mosaic--tmux .pane-tile {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 80px;
-  overflow: auto;
-  padding-right: 2.2rem;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 2.6rem;
 }
 
 .pane-mosaic--tmux .pane-tile-side {
   position: absolute;
-  top: 5px;
-  right: 5px;
-  bottom: 5px;
+  top: 6px;
+  right: 6px;
+  bottom: auto;
   width: 28px;
-  flex: none;
+  height: auto;
   min-height: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   z-index: 5;
   pointer-events: auto;
+}
+
+.pane-mosaic--tmux .pane-tile-side > button {
+  flex: 0 0 auto;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  line-height: 1;
 }
 
 .pane-mosaic--tmux .pane-tile.active {
@@ -1403,8 +1415,13 @@ dialog.dmux-dialog {
   color: var(--dmux-text);
   max-width: 28rem;
   width: calc(100vw - 2rem);
+  /* Keep dialog within the viewport; overflow:hidden was clipping footers (.modal-actions) */
+  max-height: min(92vh, calc(100vh - 2rem));
+  max-height: min(92dvh, calc(100dvh - 2rem));
   box-shadow: var(--dmux-shadow-lg);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 dialog.dmux-dialog::backdrop {
@@ -1578,7 +1595,18 @@ dialog.dmux-dialog--wizard {
 }
 
 .modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  flex-shrink: 0;
+  padding-bottom: 0.2rem;
+  background: var(--dmux-surface-elevated);
   border-color: var(--dmux-border) !important;
+  box-shadow: 0 -0.5rem 1.25rem rgba(15, 23, 42, 0.06);
+}
+
+[data-bs-theme="dark"] .modal-actions {
+  box-shadow: 0 -0.75rem 1.5rem rgba(0, 0, 0, 0.35);
 }
 
 .pane-style-color-btn {
@@ -1680,6 +1708,31 @@ dialog.dmux-dialog--wizard {
   font-size: 0.78rem;
   color: var(--dmux-text-muted);
   line-height: 1.55;
+}
+
+.plugins-add .plugins-add-main-row {
+  align-items: flex-end;
+}
+
+.plugins-add-label {
+  display: block;
+}
+
+.plugins-add-actions-col {
+  flex-shrink: 0;
+}
+
+.plugins-add-submit {
+  white-space: nowrap;
+}
+
+.plugins-add-hint {
+  line-height: 1.5;
+  max-width: 52rem;
+}
+
+.plugins-add-hint code {
+  font-size: 0.88em;
 }
 
 .plugins-add-combo {
@@ -1795,14 +1848,87 @@ dialog.dmux-dialog--wizard {
   font-style: italic;
 }
 
+.plugins-table-bar .form-check-label {
+  cursor: pointer;
+  user-select: none;
+}
+
 .plugins-table-wrap {
   border-color: var(--dmux-border) !important;
   background-color: var(--dmux-surface) !important;
 }
 
+/* Optional density: toggled via #plugins-table-compact + .plugins-table-wrap--compact */
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-table {
+  font-size: 0.76rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-table thead th {
+  padding: 0.32rem 0.5rem;
+  font-size: 0.58rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-table tbody td {
+  padding: 0.32rem 0.5rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-spec-col {
+  font-size: 0.66rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-about-cell {
+  font-size: 0.66rem;
+  line-height: 1.32;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-folder-cell,
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-installed-cell {
+  font-size: 0.62rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-actions-inner {
+  gap: 0.22rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-row-btn {
+  padding: 0.12rem 0.38rem;
+  font-size: 0.66rem;
+  line-height: 1.2;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-row-btn .bi {
+  font-size: 0.82em;
+  margin-right: 0.12rem !important;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-help-desc {
+  margin: 0 0 0.12rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-help-links {
+  font-size: 0.62rem;
+}
+
+/* Compact: hide suggested plugins.tmux snippet block (tall + redundant when space is tight) */
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-help-suggest-label,
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-help-suggest {
+  display: none !important;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-help-muted,
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-help-loading {
+  font-size: 0.68rem;
+}
+
+.plugins-table-wrap.plugins-table-wrap--compact .plugins-actions-empty {
+  font-size: 0.68rem;
+}
+
 .plugins-table {
   font-size: 0.825rem;
   margin-bottom: 0;
+  width: 100%;
+  table-layout: fixed;
   --bs-table-bg: transparent;
   --bs-table-color: var(--dmux-text);
   --bs-table-border-color: var(--dmux-border-subtle);
@@ -1828,6 +1954,39 @@ dialog.dmux-dialog--wizard {
   padding: 0.7rem 0.85rem;
   vertical-align: top;
   border-color: var(--dmux-border-subtle);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+
+/* Fixed layout column weights — avoids broken rows when the About cell is tall */
+.plugins-table thead th:nth-child(1),
+.plugins-table tbody td:nth-child(1) {
+  width: 19%;
+}
+
+.plugins-table thead th:nth-child(2),
+.plugins-table tbody td:nth-child(2) {
+  width: 40%;
+}
+
+.plugins-table thead th:nth-child(3),
+.plugins-table tbody td:nth-child(3) {
+  width: 21%;
+}
+
+.plugins-table thead th:nth-child(4),
+.plugins-table tbody td:nth-child(4) {
+  width: 7%;
+}
+
+.plugins-table thead th:nth-child(5),
+.plugins-table tbody td:nth-child(5) {
+  width: 13%;
+}
+
+.plugins-table thead th:nth-child(5) {
+  text-align: right;
 }
 
 .plugins-spec-col {
@@ -1837,20 +1996,55 @@ dialog.dmux-dialog--wizard {
   font-weight: 500;
 }
 
+.plugins-folder-cell {
+  font-size: 0.72rem;
+  color: var(--dmux-text-muted);
+}
+
+.plugins-installed-cell {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--dmux-text-muted);
+  white-space: nowrap;
+}
+
 .plugins-about-cell {
   font-weight: 400;
   font-size: 0.74rem;
   line-height: 1.5;
   vertical-align: top;
-  max-width: 22rem;
   color: var(--dmux-text-muted);
 }
 
+/* Never use display:flex on <td> — it breaks table column layout in WebKit/Blink */
 .plugins-table td.plugins-actions {
-  display: flex;
+  vertical-align: middle;
+  text-align: right;
+}
+
+.plugins-actions-inner {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.plugins-row-btn {
+  flex: 0 0 auto;
+  font-weight: 600;
+  border-radius: var(--dmux-radius-sm, 0.35rem);
+  padding-inline: 0.55rem;
+}
+
+.plugins-row-btn .bi {
+  font-size: 0.95em;
+  vertical-align: -0.06em;
+}
+
+.plugins-actions-empty {
+  font-size: 0.8rem;
 }
 
 .plugins-help-desc {
@@ -2075,11 +2269,15 @@ dialog.dmux-dialog--wizard {
     justify-content: center;
   }
 
-  .plugins-add {
+  .plugins-add .plugins-add-main-row {
     align-items: stretch;
   }
 
-  .plugins-add-label,
+  .plugins-add .plugins-add-actions-col {
+    width: 100%;
+  }
+
+  .plugins-add-submit,
   #btn-plugin-add {
     width: 100%;
   }
@@ -2089,12 +2287,14 @@ dialog.dmux-dialog--wizard {
    Window detail v2 — redesigned head, tabs, overflow menus
    ============================================================ */
 
-.win-tabs {
+/* Session-level strip: tabs + New window (sticky together) */
+.session-windows-strip {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 0.35rem;
-  padding: 0.4rem 0.4rem 0.85rem;
+  gap: 0.65rem;
   margin: 0 0 1rem;
+  padding: 0.35rem 0;
   border-bottom: 1px solid var(--dmux-border);
   position: sticky;
   top: 0;
@@ -2102,11 +2302,49 @@ dialog.dmux-dialog--wizard {
   background: linear-gradient(
     to bottom,
     var(--dmux-canvas) 0%,
-    var(--dmux-canvas) 80%,
+    var(--dmux-canvas) 88%,
     rgba(0, 0, 0, 0)
   );
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+}
+
+.session-windows-strip .win-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.session-windows-strip-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.session-windows-strip-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--dmux-text-muted);
+  padding: 0.15rem 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-new-window-btn {
+  white-space: nowrap;
+  font-weight: 600;
+  border-radius: var(--dmux-radius-sm);
+}
+
+.win-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.35rem 0 0.5rem;
+  margin: 0;
+  border-bottom: none;
 }
 
 .win-tab {
@@ -2334,6 +2572,59 @@ dialog.dmux-dialog--wizard {
 
 .win-toolbar-group .btn-layout:hover {
   background: var(--dmux-surface-soft);
+}
+
+.win-toolbar-group--menu {
+  padding: 0;
+  border: none;
+  background: transparent;
+  gap: 0;
+}
+
+.win-toolbar-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.55rem;
+  border: 1px solid var(--dmux-border-subtle);
+  background: var(--dmux-surface-soft);
+  border-radius: var(--dmux-radius-sm);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--dmux-text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.win-toolbar-menu-btn:hover:not(:disabled) {
+  background: var(--dmux-surface);
+  border-color: var(--dmux-border-strong);
+  color: var(--dmux-text);
+}
+
+.win-toolbar-menu-btn:focus-visible {
+  outline: 2px solid var(--dmux-primary);
+  outline-offset: 1px;
+}
+
+.win-toolbar-menu-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.win-toolbar-menu-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dmux-text-faint);
+}
+
+.win-toolbar-menu-chevron {
+  font-size: 0.65rem;
+  color: var(--dmux-text-faint);
+  margin-left: 0.1rem;
 }
 
 .win-toolbar-spacer {

@@ -12,7 +12,7 @@ A modern command center for tmux. Manage sessions and panes from a typed CLI, pe
 [![Python](https://img.shields.io/pypi/pyversions/dmux.svg?logo=python&logoColor=white)](https://pypi.org/project/dmux/)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-1BB91F?logo=tmux&logoColor=white)](https://github.com/tmux/tmux)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-[![Tests](https://img.shields.io/badge/tests-32%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-59%20passing-brightgreen)](tests/)
 [![Stars](https://img.shields.io/github/stars/davidix/dmux?style=social)](https://github.com/davidix/dmux/stargazers)
 
 [**Quick start**](#quick-start) · [**Web UI**](#the-web-ui) · [**Plugins (TPM)**](#tmux-plugins-tpm) · [**Why dmux?**](#why-dmux) · [**Site**](https://davidix.github.io/dmux)
@@ -42,14 +42,15 @@ Built on [`libtmux`](https://github.com/tmux-python/libtmux), [`Typer`](https://
 
 - **Session manager** — list, create, attach, rename, kill from one CLI, with smart attach (`switch-client` inside tmux, `attach` outside).
 - **Persistence** — `dmux save` snapshots every session/window/pane (working dir, command, layout) into SQLite under `~/.local/share/dmux/`. `dmux restore` rebuilds them, even after a reboot.
+- **Rich snapshots with `tmux-resurrect`** — opt in to capture per-pane processes, full pane scrollback, and vim/neovim sessions alongside dmux's structural save. The web UI lists every on-disk resurrect file (including ones written by `prefix + Ctrl-s` or `tmux-continuum`) with session/window/pane counts and a `history` badge so you can see at a glance whether scrollback will be replayed.
 - **Project workspaces** — `.dmux/layout.json` per repo root. Walk into any project, `dmux restore`, get the same layout you left.
 - **Fuzzy navigation** — `dmux pick` for sessions/windows/panes via stdlib `difflib`. No fzf required.
-- **Web UI** — Bootstrap 5, dark/light theme with no-flash init, live pane mosaic, plugin manager, status-bar wizard. Served by a tiny Flask app on `127.0.0.1`.
+- **Web UI** — Bootstrap 5, dark/light theme with no-flash init, live pane mosaic, plugin manager, status-bar wizard, snapshot restore modal with conflict detection. Served by a tiny Flask app on `127.0.0.1`.
 - **TPM, batteries-included** — TPM is vendored at `src/dmux/vendor/tpm`. `dmux plugins bootstrap` writes `~/.config/dmux/plugins.tmux` and hooks `~/.tmux.conf` for you.
 - **Freed-Wu status-bar wizard** — segment table editor that builds JIT or AOT templates and writes them back to `plugins.tmux`. **Source in tmux** does a real reload (sources your `tmux.conf` and `refresh-client -S`), so changes show up live.
 - **JSON API** — every UI action is a documented endpoint (`/api/v1/sessions`, `/api/v1/plugins/source`, etc.). Build your own dashboards or shell scripts.
 - **Type-checked** — `py.typed` package, mypy-clean public surface.
-- **Tested** — 32-test smoke suite covering CLI, API, plugin manager, snapshots.
+- **Tested** — 59-test smoke suite covering CLI, API, plugin manager, snapshots, resurrect integration.
 
 ---
 
@@ -118,6 +119,7 @@ What you get in the browser:
 - **Pane mosaic** — every pane in the focused window as a tile, with hover lift and a corner status dot.
 - **Plugins (TPM)** — list, add, remove, install, update, clean, **Source in tmux**. Inline editor for `plugins.tmux` (CodeMirror) with awesome-list autocomplete.
 - **Status-bar wizard** — segment table editor for `Freed-Wu/tmux-status-bar`. Builds the JIT `#{status-left:…}` template and writes it back to `plugins.tmux`. **Source** reloads it live.
+- **Snapshot restore** — one modal listing both dmux's SQLite snapshots and on-disk `tmux-resurrect` files (including ones written by `prefix + Ctrl-s` or `tmux-continuum`). Each resurrect entry shows session/window/pane counts, captured foreground commands (vim, ssh, …), and a `history` / `no history` badge that tells you whether pane scrollback will be replayed. "Kill conflicting sessions" actually kills the named sessions before invoking `restore.sh`, so the restore can no longer silently skip them.
 
 The UI is **not a background service**. Close the terminal → port stops responding. That's intentional: dmux is a tool you start when you need it, not a daemon.
 
@@ -193,6 +195,9 @@ Useful endpoints:
 | `DELETE` | `/api/v1/sessions/<name>`                        | Kill                                 |
 | `POST`   | `/api/v1/sessions/<name>/layout`                 | Apply layout preset                  |
 | `POST`   | `/api/v1/snapshots/save` / `GET /api/v1/snapshots` | Save / list snapshots              |
+| `POST`   | `/api/v1/snapshots/restore`                       | Restore a snapshot (SQLite **or** a `resurrect_file`); `kill_existing` clears conflicts first |
+| `GET`    | `/api/v1/snapshots/resurrect`                     | tmux-resurrect status (configured / installed / save dir / count) |
+| `GET`/`DELETE` | `/api/v1/snapshots/resurrect/files`         | List / delete on-disk `tmux_resurrect_*.txt` files (with per-snapshot pane-content archives) |
 | `GET`    | `/api/v1/plugins`                                 | TPM status + configured plugins      |
 | `GET`/`PUT` | `/api/v1/plugins/fragment`                      | Read / write `plugins.tmux`          |
 | `POST`   | `/api/v1/plugins/{install,update,clean,source}`   | TPM operations                       |
@@ -238,7 +243,7 @@ cd dmux
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                    # 32-test smoke suite
+pytest                                    # 59-test smoke suite
 ruff check src tests                      # lint
 mypy src                                  # type-check
 dmux ui --open                            # try the UI
@@ -264,10 +269,10 @@ dmux ui --open                            # try the UI
 
 ## Roadmap
 
-- [ ] Public PyPI release
+- [x] Public PyPI release
+- [x] Per-pane shell history capture into snapshots (via `tmux-resurrect` integration)
 - [ ] `dmux watch` — live snapshot daemon (opt-in)
 - [ ] Theme presets in the web UI
-- [ ] Per-pane shell history capture into snapshots
 - [ ] `dmux export --format=tmuxp` interop
 
 PRs welcome.
